@@ -5,9 +5,13 @@ import java.util.Optional;
 
 public interface NodeClient {
 
-    void put(ClusterNode node, String key, String value);
+    void putPrimary(ClusterNode node, String key, String value);
 
-    Optional<String> get(ClusterNode node, String key);
+    Optional<String> getPrimary(ClusterNode node, String key);
 
-    void delete(ClusterNode node, String key);
+    void deletePrimary(ClusterNode node, String key);
+
+    void putReplica(ClusterNode node, String key, String value);
+
+    void deleteReplica(ClusterNode node, String key);
 }

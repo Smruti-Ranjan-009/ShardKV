@@ -54,10 +54,42 @@ public final class ConsistentHashRing {
     }
 
     public ClusterNode owner(String key) {
+        return nodesFor(key, 1).get(0);
+    }
+
+    public List<ClusterNode> nodesFor(String key, int nodeCount) {
         Objects.requireNonNull(key, "key must not be null");
+        if (nodeCount < 1) {
+            throw new IllegalArgumentException("Requested node count must be greater than zero");
+        }
+        if (nodeCount > members.size()) {
+            throw new IllegalArgumentException("Requested node count must not exceed physical cluster size");
+        }
+
         long keyPosition = hash(key);
-        var ownerEntry = ring.ceilingEntry(keyPosition);
-        return ownerEntry != null ? ownerEntry.getValue() : ring.firstEntry().getValue();
+        var currentEntry = ring.ceilingEntry(keyPosition);
+        if (currentEntry == null) {
+            currentEntry = ring.firstEntry();
+        }
+
+        List<ClusterNode> selectedNodes = new ArrayList<>(nodeCount);
+        Set<String> selectedNodeIds = new HashSet<>();
+        for (int visitedPositions = 0; visitedPositions < ring.size(); visitedPositions++) {
+            ClusterNode candidate = currentEntry.getValue();
+            if (selectedNodeIds.add(candidate.id())) {
+                selectedNodes.add(candidate);
+                if (selectedNodes.size() == nodeCount) {
+                    return List.copyOf(selectedNodes);
+                }
+            }
+
+            currentEntry = ring.higherEntry(currentEntry.getKey());
+            if (currentEntry == null) {
+                currentEntry = ring.firstEntry();
+            }
+        }
+
+        throw new IllegalStateException("Consistent hash ring did not contain enough distinct physical nodes");
     }
 
     public List<ClusterNode> members() {

@@ -33,6 +33,9 @@ class ShardKvApplicationTests {
     @DynamicPropertySource
     static void configureStorage(DynamicPropertyRegistry registry) {
         registry.add("shardkv.storage.data-dir", STORAGE_DIRECTORY::toString);
+        registry.add("shardkv.node.port", () -> 8080);
+        registry.add("shardkv.cluster.members", () -> "node-1,localhost,8080");
+        registry.add("shardkv.replication.factor", () -> 1);
     }
 
     @Autowired
@@ -113,5 +116,15 @@ class ShardKvApplicationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.key").value("example"))
                 .andExpect(jsonPath("$.owner.id").value("node-1"));
+    }
+
+    @Test
+    void replicasEndpointReturnsConfiguredPlacement() throws Exception {
+        mockMvc.perform(get("/cluster/replicas/example"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.key").value("example"))
+                .andExpect(jsonPath("$.replicationFactor").value(1))
+                .andExpect(jsonPath("$.primary.id").value("node-1"))
+                .andExpect(jsonPath("$.replicas.length()").value(0));
     }
 }

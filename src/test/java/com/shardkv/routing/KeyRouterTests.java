@@ -2,6 +2,8 @@ package com.shardkv.routing;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -14,6 +16,7 @@ import com.shardkv.cluster.ClusterNode;
 import com.shardkv.cluster.ClusterProperties;
 import com.shardkv.cluster.ConsistentHashRing;
 import com.shardkv.cluster.NodeProperties;
+import com.shardkv.replication.PrimaryReplicationService;
 import com.shardkv.service.KeyValueService;
 import java.time.Duration;
 import java.util.Optional;
@@ -25,6 +28,7 @@ class KeyRouterTests {
     private ClusterMembership membership;
     private ConsistentHashRing ring;
     private KeyValueService localService;
+    private PrimaryReplicationService replicationService;
     private NodeClient nodeClient;
     private KeyRouter router;
 
@@ -38,73 +42,81 @@ class KeyRouterTests {
         membership = new ClusterMembership(new NodeProperties("node-1", "localhost", 8081), properties);
         ring = new ConsistentHashRing(membership, properties);
         localService = mock(KeyValueService.class);
+        replicationService = mock(PrimaryReplicationService.class);
         nodeClient = mock(NodeClient.class);
-        router = new KeyRouter(membership, ring, localService, nodeClient);
+        router = new KeyRouter(membership, ring, localService, replicationService, nodeClient);
     }
 
     @Test
-    void locallyOwnedPutUsesLocalStorageService() {
+    void locallyPrimaryPutDelegatesToReplicationCoordinator() {
         String key = keyOwnedBy("node-1");
 
         router.put(key, "value");
 
-        verify(localService).put(key, "value");
-        verify(nodeClient, never()).put(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(replicationService).put(key, "value");
+        verify(nodeClient, never()).putPrimary(any(), anyString(), anyString());
+        verify(nodeClient, never()).putReplica(any(), anyString(), anyString());
     }
 
     @Test
-    void remotelyOwnedPutCallsOwnerExactlyOnceWithoutLocalFallback() {
+    void nonPrimaryEntryRoutesToPrimaryExactlyOnceAndDoesNotReplicate() {
         String key = keyOwnedBy("node-2");
-        ClusterNode owner = ring.owner(key);
+        ClusterNode primary = ring.owner(key);
 
         router.put(key, "value");
 
-        verify(nodeClient, times(1)).put(owner, key, "value");
+        verify(nodeClient, times(1)).putPrimary(primary, key, "value");
+        verify(nodeClient, never()).putReplica(any(), anyString(), anyString());
+        verify(replicationService, never()).put(key, "value");
         verify(localService, never()).put(key, "value");
     }
 
     @Test
-    void locallyOwnedGetReadsLocalStorageService() {
+    void locallyPrimaryGetReadsLocalStorageWithoutReplicaFallback() {
         String key = keyOwnedBy("node-1");
         when(localService.get(key)).thenReturn("local-value");
 
         assertThat(router.get(key)).isEqualTo("local-value");
-        verify(nodeClient, never()).get(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(nodeClient, never()).getPrimary(any(), anyString());
     }
 
     @Test
-    void remotelyOwnedGetCallsOwner() {
+    void remoteGetUsesPrimaryOnly() {
         String key = keyOwnedBy("node-3");
-        ClusterNode owner = ring.owner(key);
-        when(nodeClient.get(owner, key)).thenReturn(Optional.of("remote-value"));
+        ClusterNode primary = ring.owner(key);
+        when(nodeClient.getPrimary(primary, key)).thenReturn(Optional.of("remote-value"));
 
         assertThat(router.get(key)).isEqualTo("remote-value");
         verify(localService, never()).get(key);
+        verify(nodeClient).getPrimary(primary, key);
     }
 
     @Test
-    void deleteFollowsOwnershipForLocalAndRemoteKeys() {
+    void deleteRoutesToLocalCoordinatorOrRemotePrimary() {
         String localKey = keyOwnedBy("node-1");
         String remoteKey = keyOwnedBy("node-2");
-        ClusterNode remoteOwner = ring.owner(remoteKey);
+        ClusterNode remotePrimary = ring.owner(remoteKey);
 
         router.delete(localKey);
         router.delete(remoteKey);
 
-        verify(localService).delete(localKey);
-        verify(nodeClient).delete(remoteOwner, remoteKey);
+        verify(replicationService).delete(localKey);
+        verify(nodeClient).deletePrimary(remotePrimary, remoteKey);
+        verify(nodeClient, never()).deleteReplica(any(), anyString());
         verify(localService, never()).delete(remoteKey);
     }
 
     @Test
-    void remoteFailuresPropagateWithoutWritingLocally() {
+    void primaryForwardingFailurePropagatesWithoutLocalWriteOrReplication() {
         String key = keyOwnedBy("node-2");
-        ClusterNode owner = ring.owner(key);
-        NodeCommunicationException failure = new NodeCommunicationException(owner.id(), "write key");
-        doThrow(failure).when(nodeClient).put(owner, key, "value");
+        ClusterNode primary = ring.owner(key);
+        NodeCommunicationException failure = new NodeCommunicationException(primary.id(), "coordinate primary write");
+        doThrow(failure).when(nodeClient).putPrimary(primary, key, "value");
 
         assertThatThrownBy(() -> router.put(key, "value")).isSameAs(failure);
         verify(localService, never()).put(key, "value");
+        verify(replicationService, never()).put(key, "value");
+        verify(nodeClient, never()).putReplica(any(), anyString(), anyString());
     }
 
     private String keyOwnedBy(String nodeId) {
