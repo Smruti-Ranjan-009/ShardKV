@@ -17,5 +17,7 @@ shardkv:
     read-timeout: ${SHARDKV_READ_TIMEOUT:5s}
   replication:
     factor: ${SHARDKV_REPLICATION_FACTOR:3}
+  consistency:
+    default-level: ${SHARDKV_DEFAULT_CONSISTENCY:QUORUM}
   storage:
     data-dir: ${SHARDKV_DATA_DIR:./data}

@@ -16,10 +16,10 @@ import com.shardkv.cluster.ClusterNode;
 import com.shardkv.cluster.ClusterProperties;
 import com.shardkv.cluster.ConsistentHashRing;
 import com.shardkv.cluster.NodeProperties;
+import com.shardkv.consistency.ConsistencyLevel;
+import com.shardkv.consistency.QuorumReadService;
 import com.shardkv.replication.PrimaryReplicationService;
-import com.shardkv.service.KeyValueService;
 import java.time.Duration;
-import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -27,8 +27,8 @@ class KeyRouterTests {
 
     private ClusterMembership membership;
     private ConsistentHashRing ring;
-    private KeyValueService localService;
     private PrimaryReplicationService replicationService;
+    private QuorumReadService readService;
     private NodeClient nodeClient;
     private KeyRouter router;
 
@@ -41,21 +41,21 @@ class KeyRouterTests {
                 Duration.ofSeconds(5));
         membership = new ClusterMembership(new NodeProperties("node-1", "localhost", 8081), properties);
         ring = new ConsistentHashRing(membership, properties);
-        localService = mock(KeyValueService.class);
         replicationService = mock(PrimaryReplicationService.class);
+        readService = mock(QuorumReadService.class);
         nodeClient = mock(NodeClient.class);
-        router = new KeyRouter(membership, ring, localService, replicationService, nodeClient);
+        router = new KeyRouter(membership, ring, replicationService, readService, nodeClient);
     }
 
     @Test
-    void locallyPrimaryPutDelegatesToReplicationCoordinator() {
+    void locallyPrimaryPutDelegatesToReplicationCoordinatorWithConsistency() {
         String key = keyOwnedBy("node-1");
 
-        router.put(key, "value");
+        router.put(key, "value", ConsistencyLevel.QUORUM);
 
-        verify(replicationService).put(key, "value");
-        verify(nodeClient, never()).putPrimary(any(), anyString(), anyString());
-        verify(nodeClient, never()).putReplica(any(), anyString(), anyString());
+        verify(replicationService).put(key, "value", ConsistencyLevel.QUORUM);
+        verify(nodeClient, never()).putPrimary(any(), anyString(), anyString(), any());
+        verify(nodeClient, never()).putReplica(any(), anyString(), any());
     }
 
     @Test
@@ -63,32 +63,20 @@ class KeyRouterTests {
         String key = keyOwnedBy("node-2");
         ClusterNode primary = ring.owner(key);
 
-        router.put(key, "value");
+        router.put(key, "value", ConsistencyLevel.ALL);
 
-        verify(nodeClient, times(1)).putPrimary(primary, key, "value");
-        verify(nodeClient, never()).putReplica(any(), anyString(), anyString());
-        verify(replicationService, never()).put(key, "value");
-        verify(localService, never()).put(key, "value");
+        verify(nodeClient, times(1)).putPrimary(primary, key, "value", ConsistencyLevel.ALL);
+        verify(nodeClient, never()).putReplica(any(), anyString(), any());
+        verify(replicationService, never()).put(key, "value", ConsistencyLevel.ALL);
     }
 
     @Test
-    void locallyPrimaryGetReadsLocalStorageWithoutReplicaFallback() {
-        String key = keyOwnedBy("node-1");
-        when(localService.get(key)).thenReturn("local-value");
+    void getDelegatesToQuorumReadCoordinator() {
+        when(readService.get("key", ConsistencyLevel.ONE)).thenReturn("value");
 
-        assertThat(router.get(key)).isEqualTo("local-value");
-        verify(nodeClient, never()).getPrimary(any(), anyString());
-    }
+        assertThat(router.get("key", ConsistencyLevel.ONE)).isEqualTo("value");
 
-    @Test
-    void remoteGetUsesPrimaryOnly() {
-        String key = keyOwnedBy("node-3");
-        ClusterNode primary = ring.owner(key);
-        when(nodeClient.getPrimary(primary, key)).thenReturn(Optional.of("remote-value"));
-
-        assertThat(router.get(key)).isEqualTo("remote-value");
-        verify(localService, never()).get(key);
-        verify(nodeClient).getPrimary(primary, key);
+        verify(readService).get("key", ConsistencyLevel.ONE);
     }
 
     @Test
@@ -97,26 +85,24 @@ class KeyRouterTests {
         String remoteKey = keyOwnedBy("node-2");
         ClusterNode remotePrimary = ring.owner(remoteKey);
 
-        router.delete(localKey);
-        router.delete(remoteKey);
+        router.delete(localKey, ConsistencyLevel.QUORUM);
+        router.delete(remoteKey, ConsistencyLevel.ALL);
 
-        verify(replicationService).delete(localKey);
-        verify(nodeClient).deletePrimary(remotePrimary, remoteKey);
-        verify(nodeClient, never()).deleteReplica(any(), anyString());
-        verify(localService, never()).delete(remoteKey);
+        verify(replicationService).delete(localKey, ConsistencyLevel.QUORUM);
+        verify(nodeClient).deletePrimary(remotePrimary, remoteKey, ConsistencyLevel.ALL);
     }
 
     @Test
-    void primaryForwardingFailurePropagatesWithoutLocalWriteOrReplication() {
+    void primaryForwardingFailurePropagatesWithoutLocalReplication() {
         String key = keyOwnedBy("node-2");
         ClusterNode primary = ring.owner(key);
         NodeCommunicationException failure = new NodeCommunicationException(primary.id(), "coordinate primary write");
-        doThrow(failure).when(nodeClient).putPrimary(primary, key, "value");
+        doThrow(failure).when(nodeClient)
+                .putPrimary(primary, key, "value", ConsistencyLevel.QUORUM);
 
-        assertThatThrownBy(() -> router.put(key, "value")).isSameAs(failure);
-        verify(localService, never()).put(key, "value");
-        verify(replicationService, never()).put(key, "value");
-        verify(nodeClient, never()).putReplica(any(), anyString(), anyString());
+        assertThatThrownBy(() -> router.put(key, "value", ConsistencyLevel.QUORUM)).isSameAs(failure);
+        verify(replicationService, never()).put(key, "value", ConsistencyLevel.QUORUM);
+        verify(nodeClient, never()).putReplica(any(), anyString(), any());
     }
 
     private String keyOwnedBy(String nodeId) {

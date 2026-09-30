@@ -4,9 +4,7 @@ import java.util.Optional;
 
 public interface KeyValueStore {
 
-    void put(String key, String value);
+    void put(String key, StoredRecord record);
 
-    Optional<String> get(String key);
-
-    void delete(String key);
+    Optional<StoredRecord> get(String key);
 }

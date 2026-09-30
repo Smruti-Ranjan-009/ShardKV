@@ -3,38 +3,31 @@ package com.shardkv.api;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.shardkv.service.KeyValueService;
+import com.shardkv.storage.StoredRecord;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
-class InternalReplicaKeyValueControllerTests {
+class InternalReplicaRecordControllerTests {
 
     @Test
-    void replicaPutAndDeleteOnlyTouchLocalStorage() throws Exception {
+    void replicaEndpointAppliesRecordLocallyWithoutRoutingOrReplication() throws Exception {
         KeyValueService localService = mock(KeyValueService.class);
         MockMvc mockMvc = MockMvcBuilders
-                .standaloneSetup(new InternalReplicaKeyValueController(localService))
+                .standaloneSetup(new InternalReplicaRecordController(localService))
                 .build();
 
-        mockMvc.perform(put("/internal/replica/kv/replicated-key")
+        mockMvc.perform(put("/internal/replica/record/replicated-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"value\":\"replica-value\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.key").value("replicated-key"))
-                .andExpect(jsonPath("$.value").value("replica-value"));
-
-        mockMvc.perform(delete("/internal/replica/kv/replicated-key"))
+                        .content("{\"value\":null,\"version\":8,\"tombstone\":true}"))
                 .andExpect(status().isNoContent());
 
-        verify(localService).put("replicated-key", "replica-value");
-        verify(localService).delete("replicated-key");
+        verify(localService).applyReplicaRecord("replicated-key", StoredRecord.tombstone(8));
         verifyNoMoreInteractions(localService);
     }
 }

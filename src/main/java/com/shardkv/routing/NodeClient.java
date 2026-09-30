@@ -1,17 +1,17 @@
 package com.shardkv.routing;
 
 import com.shardkv.cluster.ClusterNode;
+import com.shardkv.consistency.ConsistencyLevel;
+import com.shardkv.storage.StoredRecord;
 import java.util.Optional;
 
 public interface NodeClient {
 
-    void putPrimary(ClusterNode node, String key, String value);
+    void putPrimary(ClusterNode node, String key, String value, ConsistencyLevel consistencyLevel);
 
-    Optional<String> getPrimary(ClusterNode node, String key);
+    void deletePrimary(ClusterNode node, String key, ConsistencyLevel consistencyLevel);
 
-    void deletePrimary(ClusterNode node, String key);
+    void putReplica(ClusterNode node, String key, StoredRecord record);
 
-    void putReplica(ClusterNode node, String key, String value);
-
-    void deleteReplica(ClusterNode node, String key);
+    Optional<StoredRecord> getRecord(ClusterNode node, String key);
 }

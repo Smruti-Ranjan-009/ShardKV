@@ -3,9 +3,9 @@ package com.shardkv.routing;
 import com.shardkv.cluster.ClusterMembership;
 import com.shardkv.cluster.ClusterNode;
 import com.shardkv.cluster.ConsistentHashRing;
-import com.shardkv.common.KeyNotFoundException;
+import com.shardkv.consistency.ConsistencyLevel;
+import com.shardkv.consistency.QuorumReadService;
 import com.shardkv.replication.PrimaryReplicationService;
-import com.shardkv.service.KeyValueService;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -13,46 +13,42 @@ public class KeyRouter {
 
     private final ClusterMembership membership;
     private final ConsistentHashRing hashRing;
-    private final KeyValueService localKeyValueService;
     private final PrimaryReplicationService replicationService;
+    private final QuorumReadService quorumReadService;
     private final NodeClient nodeClient;
 
     public KeyRouter(
             ClusterMembership membership,
             ConsistentHashRing hashRing,
-            KeyValueService localKeyValueService,
             PrimaryReplicationService replicationService,
+            QuorumReadService quorumReadService,
             NodeClient nodeClient) {
         this.membership = membership;
         this.hashRing = hashRing;
-        this.localKeyValueService = localKeyValueService;
         this.replicationService = replicationService;
+        this.quorumReadService = quorumReadService;
         this.nodeClient = nodeClient;
     }
 
-    public void put(String key, String value) {
-        ClusterNode owner = hashRing.owner(key);
-        if (isLocal(owner)) {
-            replicationService.put(key, value);
+    public void put(String key, String value, ConsistencyLevel consistencyLevel) {
+        ClusterNode primary = hashRing.owner(key);
+        if (isLocal(primary)) {
+            replicationService.put(key, value, consistencyLevel);
         } else {
-            nodeClient.putPrimary(owner, key, value);
+            nodeClient.putPrimary(primary, key, value, consistencyLevel);
         }
     }
 
-    public String get(String key) {
-        ClusterNode owner = hashRing.owner(key);
-        if (isLocal(owner)) {
-            return localKeyValueService.get(key);
-        }
-        return nodeClient.getPrimary(owner, key).orElseThrow(() -> new KeyNotFoundException(key));
+    public String get(String key, ConsistencyLevel consistencyLevel) {
+        return quorumReadService.get(key, consistencyLevel);
     }
 
-    public void delete(String key) {
-        ClusterNode owner = hashRing.owner(key);
-        if (isLocal(owner)) {
-            replicationService.delete(key);
+    public void delete(String key, ConsistencyLevel consistencyLevel) {
+        ClusterNode primary = hashRing.owner(key);
+        if (isLocal(primary)) {
+            replicationService.delete(key, consistencyLevel);
         } else {
-            nodeClient.deletePrimary(owner, key);
+            nodeClient.deletePrimary(primary, key, consistencyLevel);
         }
     }
 

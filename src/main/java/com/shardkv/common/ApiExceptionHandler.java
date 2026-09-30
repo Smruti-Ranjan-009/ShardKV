@@ -1,6 +1,8 @@
 package com.shardkv.common;
 
+import com.shardkv.consistency.ConsistencyUnavailableException;
 import com.shardkv.routing.NodeCommunicationException;
+import com.shardkv.storage.RecordConflictException;
 import com.shardkv.storage.StorageException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,11 +35,31 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(NodeCommunicationException.class)
     public ProblemDetail handleNodeCommunicationFailure(NodeCommunicationException exception) {
-        LOGGER.error("Owner-node communication failed", exception);
+        LOGGER.error("Cluster-node communication failed", exception);
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 HttpStatus.SERVICE_UNAVAILABLE,
-                "The owner node could not complete the request");
-        problem.setTitle("Owner node unavailable");
+                "A required cluster node could not complete the request");
+        problem.setTitle("Cluster node unavailable");
+        return problem;
+    }
+
+    @ExceptionHandler(ConsistencyUnavailableException.class)
+    public ProblemDetail handleConsistencyUnavailable(ConsistencyUnavailableException exception) {
+        LOGGER.warn("Consistency requirement could not be satisfied", exception);
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "The requested consistency level could not be satisfied");
+        problem.setTitle("Consistency unavailable");
+        return problem;
+    }
+
+    @ExceptionHandler(RecordConflictException.class)
+    public ProblemDetail handleRecordConflict(RecordConflictException exception) {
+        LOGGER.error("Conflicting record versions detected", exception);
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT,
+                "Conflicting record contents were detected at the same version");
+        problem.setTitle("Record version conflict");
         return problem;
     }
 }

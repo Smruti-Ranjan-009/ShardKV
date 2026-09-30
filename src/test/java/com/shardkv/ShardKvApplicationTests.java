@@ -36,6 +36,7 @@ class ShardKvApplicationTests {
         registry.add("shardkv.node.port", () -> 8080);
         registry.add("shardkv.cluster.members", () -> "node-1,localhost,8080");
         registry.add("shardkv.replication.factor", () -> 1);
+        registry.add("shardkv.consistency.default-level", () -> "QUORUM");
     }
 
     @Autowired
@@ -126,5 +127,23 @@ class ShardKvApplicationTests {
                 .andExpect(jsonPath("$.replicationFactor").value(1))
                 .andExpect(jsonPath("$.primary.id").value("node-1"))
                 .andExpect(jsonPath("$.replicas.length()").value(0));
+    }
+
+    @Test
+    void explicitConsistencyParameterIsAccepted() throws Exception {
+        mockMvc.perform(put("/kv/consistent?consistency=ALL")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"value\":\"value\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/kv/consistent?consistency=ONE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.value").value("value"));
+    }
+
+    @Test
+    void invalidConsistencyLevelReturnsBadRequest() throws Exception {
+        mockMvc.perform(get("/kv/example?consistency=INVALID"))
+                .andExpect(status().isBadRequest());
     }
 }

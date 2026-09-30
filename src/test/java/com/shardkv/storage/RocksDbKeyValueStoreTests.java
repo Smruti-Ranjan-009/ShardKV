@@ -2,6 +2,7 @@ package com.shardkv.storage;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shardkv.config.StorageProperties;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
@@ -13,69 +14,64 @@ class RocksDbKeyValueStoreTests {
     private Path temporaryDirectory;
 
     @Test
-    void putFollowedByGetReturnsValue() {
-        try (RocksDbKeyValueStore store = openStore()) {
-            store.put("key", "value");
+    void versionedRecordRoundTrips() {
+        StoredRecord record = StoredRecord.live("value", 1);
 
-            assertThat(store.get("key")).contains("value");
+        try (RocksDbKeyValueStore store = openStore()) {
+            store.put("key", record);
+
+            assertThat(store.get("key")).contains(record);
         }
     }
 
     @Test
-    void updatingKeyPersistsNewestValue() {
+    void newestVersionSurvivesCloseAndReopen() {
         try (RocksDbKeyValueStore store = openStore()) {
-            store.put("key", "old-value");
-            store.put("key", "new-value");
+            store.put("key", StoredRecord.live("old-value", 1));
+            store.put("key", StoredRecord.live("new-value", 2));
         }
 
         try (RocksDbKeyValueStore reopenedStore = openStore()) {
-            assertThat(reopenedStore.get("key")).contains("new-value");
+            assertThat(reopenedStore.get("key")).contains(StoredRecord.live("new-value", 2));
         }
     }
 
     @Test
-    void deleteRemovesKey() {
+    void tombstoneSurvivesCloseAndReopen() {
         try (RocksDbKeyValueStore store = openStore()) {
-            store.put("key", "value");
-            store.delete("key");
+            store.put("deleted-key", StoredRecord.live("value", 7));
+            store.put("deleted-key", StoredRecord.tombstone(8));
+        }
 
-            assertThat(store.get("key")).isEmpty();
+        try (RocksDbKeyValueStore reopenedStore = openStore()) {
+            assertThat(reopenedStore.get("deleted-key")).contains(StoredRecord.tombstone(8));
         }
     }
 
     @Test
     void utf8KeysAndValuesRoundTrip() {
-        try (RocksDbKeyValueStore store = openStore()) {
-            store.put("नमस्ते-🔑", "こんにちは世界 🌍");
+        StoredRecord record = StoredRecord.live("こんにちは世界 🌍", 11);
 
-            assertThat(store.get("नमस्ते-🔑")).contains("こんにちは世界 🌍");
+        try (RocksDbKeyValueStore store = openStore()) {
+            store.put("नमस्ते-🔑", record);
+
+            assertThat(store.get("नमस्ते-🔑")).contains(record);
         }
     }
 
     @Test
-    void dataSurvivesCloseAndReopen() {
+    void missingKeyRemainsDistinctFromTombstone() {
         try (RocksDbKeyValueStore store = openStore()) {
-            store.put("persistent-key", "persistent-value");
-        }
+            store.put("deleted-key", StoredRecord.tombstone(1));
 
-        try (RocksDbKeyValueStore reopenedStore = openStore()) {
-            assertThat(reopenedStore.get("persistent-key")).contains("persistent-value");
-        }
-    }
-
-    @Test
-    void deletedKeyRemainsDeletedAfterCloseAndReopen() {
-        try (RocksDbKeyValueStore store = openStore()) {
-            store.put("deleted-key", "value");
-            store.delete("deleted-key");
-        }
-
-        try (RocksDbKeyValueStore reopenedStore = openStore()) {
-            assertThat(reopenedStore.get("deleted-key")).isEmpty();
+            assertThat(store.get("never-written")).isEmpty();
+            assertThat(store.get("deleted-key")).contains(StoredRecord.tombstone(1));
         }
     }
 
     private RocksDbKeyValueStore openStore() {
-        return new RocksDbKeyValueStore(new StorageProperties(temporaryDirectory.toString()));
+        return new RocksDbKeyValueStore(
+                new StorageProperties(temporaryDirectory.toString()),
+                new ObjectMapper());
     }
 }

@@ -1,5 +1,7 @@
 package com.shardkv.storage;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shardkv.config.StorageProperties;
 import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
@@ -21,10 +23,11 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
     private final Options options;
     private final WriteOptions writeOptions;
     private final RocksDB database;
+    private final ObjectMapper objectMapper;
     private final ReadWriteLock lifecycleLock = new ReentrantReadWriteLock();
     private boolean closed;
 
-    public RocksDbKeyValueStore(StorageProperties properties) {
+    public RocksDbKeyValueStore(StorageProperties properties, ObjectMapper objectMapper) {
         Path dataDirectory = properties.dataDirectory().toAbsolutePath().normalize();
 
         loadNativeLibrary();
@@ -57,15 +60,16 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
         this.database = newDatabase;
         this.options = newOptions;
         this.writeOptions = newWriteOptions;
+        this.objectMapper = objectMapper;
     }
 
     @Override
-    public void put(String key, String value) {
+    public void put(String key, StoredRecord record) {
         Lock lock = lifecycleLock.readLock();
         lock.lock();
         try {
             ensureOpen();
-            database.put(writeOptions, encode(key), encode(value));
+            database.put(writeOptions, encode(key), encodeRecord(record));
         } catch (RocksDBException exception) {
             throw new StorageException("Failed to store value", exception);
         } finally {
@@ -74,29 +78,15 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
     }
 
     @Override
-    public Optional<String> get(String key) {
+    public Optional<StoredRecord> get(String key) {
         Lock lock = lifecycleLock.readLock();
         lock.lock();
         try {
             ensureOpen();
             byte[] value = database.get(encode(key));
-            return value == null ? Optional.empty() : Optional.of(decode(value));
+            return value == null ? Optional.empty() : Optional.of(decodeRecord(value));
         } catch (RocksDBException exception) {
             throw new StorageException("Failed to read value", exception);
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    @Override
-    public void delete(String key) {
-        Lock lock = lifecycleLock.readLock();
-        lock.lock();
-        try {
-            ensureOpen();
-            database.delete(writeOptions, encode(key));
-        } catch (RocksDBException exception) {
-            throw new StorageException("Failed to delete value", exception);
         } finally {
             lock.unlock();
         }
@@ -144,8 +134,20 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
         return value.getBytes(StandardCharsets.UTF_8);
     }
 
-    private static String decode(byte[] value) {
-        return new String(value, StandardCharsets.UTF_8);
+    private byte[] encodeRecord(StoredRecord record) {
+        try {
+            return objectMapper.writeValueAsBytes(record);
+        } catch (JsonProcessingException exception) {
+            throw new StorageException("Failed to encode stored record", exception);
+        }
+    }
+
+    private StoredRecord decodeRecord(byte[] value) {
+        try {
+            return objectMapper.readValue(value, StoredRecord.class);
+        } catch (Exception exception) {
+            throw new StorageException("Failed to decode stored record", exception);
+        }
     }
 
     private void ensureOpen() {

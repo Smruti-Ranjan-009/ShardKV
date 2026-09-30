@@ -1,19 +1,28 @@
 package com.shardkv.replication;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.shardkv.cluster.ClusterMembership;
 import com.shardkv.cluster.ClusterNode;
 import com.shardkv.cluster.ClusterProperties;
 import com.shardkv.cluster.ConsistentHashRing;
 import com.shardkv.cluster.NodeProperties;
+import com.shardkv.consistency.ConsistencyLevel;
+import com.shardkv.consistency.ConsistencyPolicy;
+import com.shardkv.consistency.ConsistencyProperties;
+import com.shardkv.consistency.ConsistencyUnavailableException;
 import com.shardkv.routing.NodeClient;
 import com.shardkv.routing.NodeCommunicationException;
 import com.shardkv.service.KeyValueService;
+import com.shardkv.storage.StorageException;
+import com.shardkv.storage.StoredRecord;
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,69 +53,106 @@ class PrimaryReplicationServiceTests {
         replicationService = new PrimaryReplicationService(
                 membership,
                 replicaPlanner,
+                new ConsistencyPolicy(new ConsistencyProperties(ConsistencyLevel.QUORUM)),
                 localService,
                 nodeClient);
     }
 
     @Test
-    void primaryPutWritesLocallyBeforeEveryReplica() {
-        String key = keyPrimaryOnLocalNode();
+    void primaryDurableWriteComesBeforeBroadReplicaAttempts() {
+        String key = keyPrimaryOn("node-1");
+        StoredRecord record = StoredRecord.live("value", 7);
         ReplicaPlan plan = replicaPlanner.planFor(key);
+        when(localService.putNextVersion(key, "value")).thenReturn(record);
         InOrder orderedWrites = inOrder(localService, nodeClient);
 
-        replicationService.put(key, "value");
+        replicationService.put(key, "value", ConsistencyLevel.ALL);
 
-        orderedWrites.verify(localService).put(key, "value");
+        orderedWrites.verify(localService).putNextVersion(key, "value");
         for (ClusterNode replica : plan.replicas()) {
-            orderedWrites.verify(nodeClient).putReplica(replica, key, "value");
+            orderedWrites.verify(nodeClient).putReplica(replica, key, record);
         }
-        verify(nodeClient, never()).putPrimary(plan.primary(), key, "value");
+        verify(nodeClient, never()).putPrimary(
+                plan.primary(), key, "value", ConsistencyLevel.ALL);
     }
 
     @Test
-    void replicaFailurePropagatesAfterPrimaryDurableWrite() {
-        String key = keyPrimaryOnLocalNode();
-        ClusterNode firstReplica = replicaPlanner.planFor(key).replicas().get(0);
-        NodeCommunicationException failure = new NodeCommunicationException(firstReplica.id(), "write replica");
-        org.mockito.Mockito.doThrow(failure)
-                .when(nodeClient)
-                .putReplica(firstReplica, key, "value");
-
-        assertThatThrownBy(() -> replicationService.put(key, "value")).isSameAs(failure);
-        verify(localService).put(key, "value");
-    }
-
-    @Test
-    void primaryDeleteRunsLocallyBeforeDeletingEveryReplica() {
-        String key = keyPrimaryOnLocalNode();
+    void primaryPlusOneReplicaSatisfiesOneAndQuorumButNotAll() {
+        String key = keyPrimaryOn("node-1");
+        StoredRecord record = StoredRecord.live("value", 1);
         ReplicaPlan plan = replicaPlanner.planFor(key);
-        InOrder orderedDeletes = inOrder(localService, nodeClient);
+        when(localService.putNextVersion(key, "value")).thenReturn(record);
+        failReplica(plan.replicas().get(1), key, record);
 
-        replicationService.delete(key);
-
-        orderedDeletes.verify(localService).delete(key);
-        for (ClusterNode replica : plan.replicas()) {
-            orderedDeletes.verify(nodeClient).deleteReplica(replica, key);
-        }
-        verify(nodeClient, never()).deletePrimary(plan.primary(), key);
+        assertThatCode(() -> replicationService.put(key, "value", ConsistencyLevel.ONE))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> replicationService.put(key, "value", ConsistencyLevel.QUORUM))
+                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> replicationService.put(key, "value", ConsistencyLevel.ALL))
+                .isInstanceOf(ConsistencyUnavailableException.class);
     }
 
     @Test
-    void nonPrimaryNodeCannotCoordinateReplication() {
-        String key = keyPrimaryOnAnotherNode();
+    void primaryOnlySatisfiesOneButNotQuorumOrAll() {
+        String key = keyPrimaryOn("node-1");
+        StoredRecord record = StoredRecord.live("value", 1);
+        ReplicaPlan plan = replicaPlanner.planFor(key);
+        when(localService.putNextVersion(key, "value")).thenReturn(record);
+        for (ClusterNode replica : plan.replicas()) {
+            failReplica(replica, key, record);
+        }
 
-        assertThatThrownBy(() -> replicationService.put(key, "value"))
+        assertThatCode(() -> replicationService.put(key, "value", ConsistencyLevel.ONE))
+                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> replicationService.put(key, "value", ConsistencyLevel.QUORUM))
+                .isInstanceOf(ConsistencyUnavailableException.class);
+        assertThatThrownBy(() -> replicationService.put(key, "value", ConsistencyLevel.ALL))
+                .isInstanceOf(ConsistencyUnavailableException.class);
+    }
+
+    @Test
+    void primaryStorageFailureFailsEveryConsistencyLevel() {
+        String key = keyPrimaryOn("node-1");
+        StorageException failure = new StorageException("primary failed", new RuntimeException());
+        when(localService.putNextVersion(key, "value")).thenThrow(failure);
+
+        for (ConsistencyLevel level : ConsistencyLevel.values()) {
+            assertThatThrownBy(() -> replicationService.put(key, "value", level)).isSameAs(failure);
+        }
+    }
+
+    @Test
+    void deleteReplicatesTheExactTombstoneAndUsesRequestedThreshold() {
+        String key = keyPrimaryOn("node-1");
+        StoredRecord tombstone = StoredRecord.tombstone(9);
+        ReplicaPlan plan = replicaPlanner.planFor(key);
+        when(localService.tombstoneNextVersion(key)).thenReturn(tombstone);
+        failReplica(plan.replicas().get(1), key, tombstone);
+
+        assertThatCode(() -> replicationService.delete(key, ConsistencyLevel.QUORUM))
+                .doesNotThrowAnyException();
+        for (ClusterNode replica : plan.replicas()) {
+            verify(nodeClient).putReplica(replica, key, tombstone);
+        }
+
+        assertThatThrownBy(() -> replicationService.delete(key, ConsistencyLevel.ALL))
+                .isInstanceOf(ConsistencyUnavailableException.class);
+    }
+
+    @Test
+    void nonPrimaryNodeCannotCoordinateMutation() {
+        String key = keyPrimaryOn("node-2");
+
+        assertThatThrownBy(() -> replicationService.put(key, "value", ConsistencyLevel.ONE))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("primary node");
-        verify(localService, never()).put(key, "value");
+        verify(localService, never()).putNextVersion(key, "value");
     }
 
-    private String keyPrimaryOnLocalNode() {
-        return keyPrimaryOn("node-1");
-    }
-
-    private String keyPrimaryOnAnotherNode() {
-        return keyPrimaryOn("node-2");
+    private void failReplica(ClusterNode replica, String key, StoredRecord record) {
+        doThrow(new NodeCommunicationException(replica.id(), "write replica record"))
+                .when(nodeClient)
+                .putReplica(replica, key, record);
     }
 
     private String keyPrimaryOn(String nodeId) {

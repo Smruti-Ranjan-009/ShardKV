@@ -1,8 +1,9 @@
 package com.shardkv.routing;
 
-import com.shardkv.api.KeyValueResponse;
 import com.shardkv.api.PutValueRequest;
 import com.shardkv.cluster.ClusterNode;
+import com.shardkv.consistency.ConsistencyLevel;
+import com.shardkv.storage.StoredRecord;
 import java.util.Optional;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
@@ -12,9 +13,10 @@ import org.springframework.web.client.RestClientException;
 @Component
 public class HttpNodeClient implements NodeClient {
 
-    private static final String INTERNAL_LOCAL_KEY_PATH = "/internal/kv/{key}";
-    private static final String INTERNAL_PRIMARY_KEY_PATH = "/internal/primary/kv/{key}";
-    private static final String INTERNAL_REPLICA_KEY_PATH = "/internal/replica/kv/{key}";
+    private static final String INTERNAL_PRIMARY_KEY_PATH =
+            "/internal/primary/kv/{key}?consistency={consistency}";
+    private static final String INTERNAL_REPLICA_RECORD_PATH = "/internal/replica/record/{key}";
+    private static final String INTERNAL_RECORD_PATH = "/internal/record/{key}";
 
     private final RestClient restClient;
 
@@ -23,63 +25,65 @@ public class HttpNodeClient implements NodeClient {
     }
 
     @Override
-    public void putPrimary(ClusterNode node, String key, String value) {
-        put(node, key, value, INTERNAL_PRIMARY_KEY_PATH, "coordinate primary write");
-    }
-
-    @Override
-    public Optional<String> getPrimary(ClusterNode node, String key) {
-        try {
-            KeyValueResponse response = restClient.get()
-                    .uri(node.baseUri() + INTERNAL_LOCAL_KEY_PATH, key)
-                    .retrieve()
-                    .body(KeyValueResponse.class);
-            if (response == null) {
-                throw new NodeCommunicationException(node.id(), "read primary key");
-            }
-            return Optional.of(response.value());
-        } catch (HttpClientErrorException.NotFound exception) {
-            return Optional.empty();
-        } catch (RestClientException exception) {
-            throw new NodeCommunicationException(node.id(), "read primary key", exception);
-        }
-    }
-
-    @Override
-    public void deletePrimary(ClusterNode node, String key) {
-        delete(node, key, INTERNAL_PRIMARY_KEY_PATH, "coordinate primary delete");
-    }
-
-    @Override
-    public void putReplica(ClusterNode node, String key, String value) {
-        put(node, key, value, INTERNAL_REPLICA_KEY_PATH, "write replica");
-    }
-
-    @Override
-    public void deleteReplica(ClusterNode node, String key) {
-        delete(node, key, INTERNAL_REPLICA_KEY_PATH, "delete replica");
-    }
-
-    private void put(ClusterNode node, String key, String value, String path, String operation) {
+    public void putPrimary(
+            ClusterNode node,
+            String key,
+            String value,
+            ConsistencyLevel consistencyLevel) {
         try {
             restClient.put()
-                    .uri(node.baseUri() + path, key)
+                    .uri(node.baseUri() + INTERNAL_PRIMARY_KEY_PATH, key, consistencyLevel)
                     .body(new PutValueRequest(value))
                     .retrieve()
                     .toBodilessEntity();
         } catch (RestClientException exception) {
-            throw new NodeCommunicationException(node.id(), operation, exception);
+            throw new NodeCommunicationException(node.id(), "coordinate primary write", exception);
         }
     }
 
-    private void delete(ClusterNode node, String key, String path, String operation) {
+    @Override
+    public void deletePrimary(
+            ClusterNode node,
+            String key,
+            ConsistencyLevel consistencyLevel) {
         try {
             restClient.delete()
-                    .uri(node.baseUri() + path, key)
+                    .uri(node.baseUri() + INTERNAL_PRIMARY_KEY_PATH, key, consistencyLevel)
                     .retrieve()
                     .toBodilessEntity();
         } catch (RestClientException exception) {
-            throw new NodeCommunicationException(node.id(), operation, exception);
+            throw new NodeCommunicationException(node.id(), "coordinate primary delete", exception);
+        }
+    }
+
+    @Override
+    public void putReplica(ClusterNode node, String key, StoredRecord record) {
+        try {
+            restClient.put()
+                    .uri(node.baseUri() + INTERNAL_REPLICA_RECORD_PATH, key)
+                    .body(record)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientException exception) {
+            throw new NodeCommunicationException(node.id(), "write replica record", exception);
+        }
+    }
+
+    @Override
+    public Optional<StoredRecord> getRecord(ClusterNode node, String key) {
+        try {
+            StoredRecord response = restClient.get()
+                    .uri(node.baseUri() + INTERNAL_RECORD_PATH, key)
+                    .retrieve()
+                    .body(StoredRecord.class);
+            if (response == null) {
+                throw new NodeCommunicationException(node.id(), "read stored record");
+            }
+            return Optional.of(response);
+        } catch (HttpClientErrorException.NotFound exception) {
+            return Optional.empty();
+        } catch (RestClientException exception) {
+            throw new NodeCommunicationException(node.id(), "read stored record", exception);
         }
     }
 }
