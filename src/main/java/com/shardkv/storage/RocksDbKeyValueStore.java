@@ -2,7 +2,6 @@ package com.shardkv.storage;
 
 import com.shardkv.config.StorageProperties;
 import jakarta.annotation.PreDestroy;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,21 +29,34 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
 
         loadNativeLibrary();
 
-        Options newOptions = new Options().setCreateIfMissing(true);
-        WriteOptions newWriteOptions = new WriteOptions()
-                .setDisableWAL(false)
-                .setSync(true);
+        Options newOptions = null;
+        WriteOptions newWriteOptions = null;
+        RocksDB newDatabase = null;
 
         try {
+            newOptions = new Options();
+            newOptions.setCreateIfMissing(true);
+
+            newWriteOptions = new WriteOptions();
+            newWriteOptions.setDisableWAL(false);
+            newWriteOptions.setSync(true);
+
             Files.createDirectories(dataDirectory);
-            this.database = RocksDB.open(newOptions, dataDirectory.toString());
-            this.options = newOptions;
-            this.writeOptions = newWriteOptions;
-        } catch (IOException | RocksDBException exception) {
-            newWriteOptions.close();
-            newOptions.close();
-            throw new StorageException("Failed to initialize RocksDB storage", exception);
+            newDatabase = RocksDB.open(newOptions, dataDirectory.toString());
+        } catch (Throwable failure) {
+            closeAfterInitializationFailure(newDatabase, failure);
+            closeAfterInitializationFailure(newWriteOptions, failure);
+            closeAfterInitializationFailure(newOptions, failure);
+
+            if (failure instanceof Error error) {
+                throw error;
+            }
+            throw new StorageException("Failed to initialize RocksDB storage", failure);
         }
+
+        this.database = newDatabase;
+        this.options = newOptions;
+        this.writeOptions = newWriteOptions;
     }
 
     @Override
@@ -113,6 +125,18 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
             RocksDB.loadLibrary();
         } catch (RuntimeException | UnsatisfiedLinkError error) {
             throw new StorageException("Failed to load the native RocksDB library", error);
+        }
+    }
+
+    private static void closeAfterInitializationFailure(AutoCloseable resource, Throwable failure) {
+        if (resource == null) {
+            return;
+        }
+
+        try {
+            resource.close();
+        } catch (Throwable closeFailure) {
+            failure.addSuppressed(closeFailure);
         }
     }
 
