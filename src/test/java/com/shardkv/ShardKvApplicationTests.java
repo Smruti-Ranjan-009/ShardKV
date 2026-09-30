@@ -1,27 +1,49 @@
 package com.shardkv;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.shardkv.storage.KeyValueStore;
+import com.shardkv.storage.RocksDbKeyValueStore;
+import java.nio.file.Path;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class ShardKvApplicationTests {
+
+    private static final Path STORAGE_DIRECTORY = Path.of(
+            System.getProperty("java.io.tmpdir"),
+            "shardkv-api-tests-" + UUID.randomUUID());
+
+    @DynamicPropertySource
+    static void configureStorage(DynamicPropertyRegistry registry) {
+        registry.add("shardkv.storage.data-dir", STORAGE_DIRECTORY::toString);
+    }
 
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private KeyValueStore keyValueStore;
+
     @Test
     void contextLoads() {
+        assertThat(keyValueStore).isInstanceOf(RocksDbKeyValueStore.class);
     }
 
     @Test

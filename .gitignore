@@ -1,6 +1,9 @@
 # Maven build output
 target/
 
+# Runtime storage
+data/
+
 # Java and JVM artifacts
 *.class
 hs_err_pid*

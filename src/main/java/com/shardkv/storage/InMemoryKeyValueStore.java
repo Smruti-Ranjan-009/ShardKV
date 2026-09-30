@@ -3,9 +3,7 @@ package com.shardkv.storage;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import org.springframework.stereotype.Repository;
 
-@Repository
 public class InMemoryKeyValueStore implements KeyValueStore {
 
     private final ConcurrentMap<String, String> values = new ConcurrentHashMap<>();
