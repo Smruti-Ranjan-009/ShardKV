@@ -6,5 +6,14 @@ server:
   port: ${SERVER_PORT:8080}
 
 shardkv:
+  node:
+    id: ${SHARDKV_NODE_ID:node-1}
+    host: ${SHARDKV_NODE_HOST:localhost}
+    port: ${SERVER_PORT:8080}
+  cluster:
+    members: "${SHARDKV_CLUSTER_MEMBERS:${SHARDKV_NODE_ID:node-1},${SHARDKV_NODE_HOST:localhost},${SERVER_PORT:8080}}"
+    virtual-nodes: ${SHARDKV_VIRTUAL_NODES:128}
+    connect-timeout: ${SHARDKV_CONNECT_TIMEOUT:2s}
+    read-timeout: ${SHARDKV_READ_TIMEOUT:5s}
   storage:
     data-dir: ${SHARDKV_DATA_DIR:./data}

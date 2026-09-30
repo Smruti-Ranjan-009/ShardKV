@@ -96,4 +96,22 @@ class ShardKvApplicationTests {
                 .andExpect(jsonPath("$.status").value("UP"))
                 .andExpect(jsonPath("$.service").value("shardkv"));
     }
+
+    @Test
+    void clusterEndpointReturnsConfiguredSingleNodeCluster() throws Exception {
+        mockMvc.perform(get("/cluster"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.localNode.id").value("node-1"))
+                .andExpect(jsonPath("$.members.length()").value(1))
+                .andExpect(jsonPath("$.members[0].id").value("node-1"))
+                .andExpect(jsonPath("$.virtualNodesPerNode").value(128));
+    }
+
+    @Test
+    void ownerEndpointReturnsDeterministicOwner() throws Exception {
+        mockMvc.perform(get("/cluster/owner/example"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.key").value("example"))
+                .andExpect(jsonPath("$.owner.id").value("node-1"));
+    }
 }

@@ -1,5 +1,6 @@
 package com.shardkv.common;
 
+import com.shardkv.routing.NodeCommunicationException;
 import com.shardkv.storage.StorageException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +28,16 @@ public class ApiExceptionHandler {
                 HttpStatus.INTERNAL_SERVER_ERROR,
                 "The storage operation could not be completed");
         problem.setTitle("Storage failure");
+        return problem;
+    }
+
+    @ExceptionHandler(NodeCommunicationException.class)
+    public ProblemDetail handleNodeCommunicationFailure(NodeCommunicationException exception) {
+        LOGGER.error("Owner-node communication failed", exception);
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "The owner node could not complete the request");
+        problem.setTitle("Owner node unavailable");
         return problem;
     }
 }
