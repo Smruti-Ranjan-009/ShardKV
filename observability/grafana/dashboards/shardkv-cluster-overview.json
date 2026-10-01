@@ -1,0 +1,192 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "options": { "0": { "color": "red", "text": "UNHEALTHY" }, "0.5": { "color": "yellow", "text": "SUSPECT" }, "1": { "color": "green", "text": "HEALTHY" } }, "type": "value" }
+          ],
+          "max": 1,
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 1 } ] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "targets": [ { "expr": "shardkv_node_health{job=\"shardkv\"}", "legendFormat": "{{node}} sees {{peer}}", "refId": "A" } ],
+      "title": "Cluster Health",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisLabel": "requests/s", "axisPlacement": "auto", "drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" } }, "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (node) (rate(http_server_requests_seconds_count{job=\"shardkv\",uri!=\"/actuator/prometheus\"}[$__rate_interval]))", "legendFormat": "{{node}}", "refId": "A" } ],
+      "title": "Request Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisLabel": "latency", "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "none" } }, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "id": 3,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_requests_seconds_bucket{job=\"shardkv\",uri!=\"/actuator/prometheus\"}[$__rate_interval])))", "legendFormat": "P50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{job=\"shardkv\",uri!=\"/actuator/prometheus\"}[$__rate_interval])))", "legendFormat": "P95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{job=\"shardkv\",uri!=\"/actuator/prometheus\"}[$__rate_interval])))", "legendFormat": "P99", "refId": "C" }
+      ],
+      "title": "HTTP Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisLabel": "operations/s", "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "none" } }, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "id": 4,
+      "options": { "legend": { "calcs": ["mean"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (method) (rate(http_server_requests_seconds_count{job=\"shardkv\",uri=~\"/kv/\\\\{key\\\\}|/documents/\\\\{key\\\\}\"}[$__rate_interval]))", "legendFormat": "{{method}}", "refId": "A" } ],
+      "title": "GET / PUT / DELETE Activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "none" } }, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "id": 5,
+      "options": { "legend": { "calcs": ["mean"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (consistency, operation, result) (rate(shardkv_consistency_operations_total{job=\"shardkv\"}[$__rate_interval]))", "legendFormat": "{{consistency}} {{operation}} {{result}}", "refId": "A" } ],
+      "title": "Consistency Outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "none" } }, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "id": 6,
+      "options": { "legend": { "calcs": ["mean"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (operation, result) (rate(shardkv_replication_operations_total{job=\"shardkv\"}[$__rate_interval]))", "legendFormat": "{{operation}} {{result}}", "refId": "A" } ],
+      "title": "Replication Activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "none" } }, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "id": 7,
+      "options": { "legend": { "calcs": ["mean"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (node, peer, result) (rate(shardkv_heartbeat_total{job=\"shardkv\"}[$__rate_interval]))", "legendFormat": "{{node}} -> {{peer}} {{result}}", "refId": "A" } ],
+      "title": "Heartbeats",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "fillOpacity": 40, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "normal" } }, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "id": 8,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (peer, from, to) (increase(shardkv_node_health_transitions_total{job=\"shardkv\"}[$__rate_interval]))", "legendFormat": "{{peer}} {{from}} -> {{to}}", "refId": "A" } ],
+      "title": "Health Transitions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "fillOpacity": 35, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "normal" } }, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 31 },
+      "id": 9,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (node) (increase(shardkv_read_failover_total{job=\"shardkv\"}[$__rate_interval]))", "legendFormat": "{{node}}", "refId": "A" } ],
+      "title": "Read Failover",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "fillOpacity": 35, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "normal" } }, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 31 },
+      "id": 10,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (result) (increase(shardkv_read_repair_total{job=\"shardkv\"}[$__rate_interval]))", "legendFormat": "{{result}}", "refId": "A" } ],
+      "title": "Read Repair",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "none" } }, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 31 },
+      "id": 11,
+      "options": { "legend": { "calcs": ["mean"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (result) (rate(shardkv_query_operations_total{job=\"shardkv\"}[$__rate_interval]))", "legendFormat": "{{result}}", "refId": "A" } ],
+      "title": "Distributed Query Outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "none" } }, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 38 },
+      "id": 12,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "histogram_quantile(0.95, sum by (le) (rate(shardkv_query_duration_seconds_bucket{job=\"shardkv\"}[$__rate_interval])))", "legendFormat": "P95", "refId": "A" } ],
+      "title": "Distributed Query Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "none" } }, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 38 },
+      "id": 13,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "sum(rate(shardkv_query_results_sum{job=\"shardkv\"}[$__rate_interval])) / clamp_min(sum(rate(shardkv_query_results_count{job=\"shardkv\"}[$__rate_interval])), 1e-9)", "legendFormat": "average results", "refId": "A" },
+        { "expr": "sum(increase(shardkv_query_fanout_failures_total{job=\"shardkv\"}[$__rate_interval]))", "legendFormat": "fan-out failures", "refId": "B" }
+      ],
+      "title": "Query Results and Fan-out Failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "fillOpacity": 30, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "normal" } }, "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 38 },
+      "id": 14,
+      "options": { "legend": { "calcs": ["mean"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "expr": "sum by (status) (rate(http_server_requests_seconds_count{job=\"shardkv\",status=~\"4..|5..\"}[$__rate_interval]))", "legendFormat": "HTTP {{status}}", "refId": "A" } ],
+      "title": "HTTP Errors",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 41,
+  "tags": ["shardkv", "distributed-systems", "phase-7"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "ShardKV Cluster Overview",
+  "uid": "shardkv-cluster-overview",
+  "version": 1,
+  "weekStart": ""
+}

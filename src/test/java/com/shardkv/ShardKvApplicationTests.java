@@ -7,6 +7,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 
 import com.shardkv.storage.KeyValueStore;
 import com.shardkv.storage.RocksDbKeyValueStore;
@@ -15,6 +18,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.annotation.DirtiesContext;
@@ -24,6 +28,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@AutoConfigureObservability
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class ShardKvApplicationTests {
 
@@ -101,6 +106,27 @@ class ShardKvApplicationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("UP"))
                 .andExpect(jsonPath("$.service").value("shardkv"));
+    }
+
+    @Test
+    void actuatorExposesHealthAndPrometheusMetricsWithoutKeyLabels() throws Exception {
+        String key = "metrics-secret-key";
+        mockMvc.perform(put("/kv/" + key + "?consistency=QUORUM")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"value\":\"metrics-value\"}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/kv/" + key + "?consistency=QUORUM"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+        mockMvc.perform(get("/actuator/prometheus"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("shardkv_storage_operations_total")))
+                .andExpect(content().string(containsString("shardkv_consistency_operations_total")))
+                .andExpect(content().string(not(containsString(key))))
+                .andExpect(content().string(not(containsString("metrics-value"))));
     }
 
     @Test

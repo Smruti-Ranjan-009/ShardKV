@@ -12,6 +12,7 @@ import com.shardkv.index.IndexingProperties;
 import com.shardkv.index.UnknownIndexFieldException;
 import com.shardkv.service.KeyValueService;
 import com.shardkv.service.StripedKeyLock;
+import com.shardkv.observability.TestMetrics;
 import java.util.List;
 import java.util.Map;
 import java.nio.file.Path;
@@ -160,6 +161,7 @@ class RocksDbKeyValueStoreTests {
                 objectMapper,
                 new DocumentCodec(objectMapper),
                 new IndexKeyCodec(),
-                new IndexingProperties(List.of("city", "role")));
+                new IndexingProperties(List.of("city", "role")),
+                TestMetrics.create());
     }
 }

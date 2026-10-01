@@ -23,6 +23,7 @@ import com.shardkv.routing.NodeCommunicationException;
 import com.shardkv.service.KeyValueService;
 import com.shardkv.storage.StorageException;
 import com.shardkv.storage.StoredRecord;
+import com.shardkv.observability.TestMetrics;
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,7 +56,8 @@ class PrimaryReplicationServiceTests {
                 replicaPlanner,
                 new ConsistencyPolicy(new ConsistencyProperties(ConsistencyLevel.QUORUM)),
                 localService,
-                nodeClient);
+                nodeClient,
+                TestMetrics.create());
     }
 
     @Test

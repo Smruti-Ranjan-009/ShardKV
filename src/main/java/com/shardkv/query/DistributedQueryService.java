@@ -4,6 +4,8 @@ import com.shardkv.cluster.ClusterMembership;
 import com.shardkv.cluster.ClusterNode;
 import com.shardkv.document.DocumentResult;
 import com.shardkv.routing.NodeClient;
+import com.shardkv.observability.ShardKvMetrics;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -24,21 +26,36 @@ public class DistributedQueryService {
     private final NodeClient nodeClient;
     private final QueryProperties properties;
     private final Executor queryExecutor;
+    private final ShardKvMetrics metrics;
 
     public DistributedQueryService(
             ClusterMembership membership,
             LocalQueryService localQueryService,
             NodeClient nodeClient,
             QueryProperties properties,
-            @Qualifier("queryExecutor") Executor queryExecutor) {
+            @Qualifier("queryExecutor") Executor queryExecutor,
+            ShardKvMetrics metrics) {
         this.membership = membership;
         this.localQueryService = localQueryService;
         this.nodeClient = nodeClient;
         this.properties = properties;
         this.queryExecutor = queryExecutor;
+        this.metrics = metrics;
     }
 
     public QueryResponse query(QueryRequest request) {
+        long started = System.nanoTime();
+        try {
+            QueryResponse response = executeQuery(request);
+            metrics.queryOperation(true, elapsed(started), response.count());
+            return response;
+        } catch (RuntimeException exception) {
+            metrics.queryOperation(false, elapsed(started), null);
+            throw exception;
+        }
+    }
+
+    private QueryResponse executeQuery(QueryRequest request) {
         Map<String, Object> filters = localQueryService.validateAndNormalize(request);
         QueryRequest normalizedRequest = new QueryRequest(filters);
         int perNodeLimit = Math.addExact(properties.maxResults(), 1);
@@ -81,9 +98,18 @@ public class DistributedQueryService {
     }
 
     private List<DocumentResult> queryNode(ClusterNode node, QueryRequest request, int limit) {
-        if (node.id().equals(membership.localNode().id())) {
-            return localQueryService.query(request, limit);
+        try {
+            if (node.id().equals(membership.localNode().id())) {
+                return localQueryService.query(request, limit);
+            }
+            return nodeClient.queryLocal(node, request, limit);
+        } catch (RuntimeException exception) {
+            metrics.queryFanoutFailure(node.id());
+            throw exception;
         }
-        return nodeClient.queryLocal(node, request, limit);
+    }
+
+    private Duration elapsed(long started) {
+        return Duration.ofNanos(System.nanoTime() - started);
     }
 }

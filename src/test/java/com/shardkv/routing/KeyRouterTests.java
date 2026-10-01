@@ -19,6 +19,7 @@ import com.shardkv.cluster.NodeProperties;
 import com.shardkv.consistency.ConsistencyLevel;
 import com.shardkv.consistency.QuorumReadService;
 import com.shardkv.replication.PrimaryReplicationService;
+import com.shardkv.observability.TestMetrics;
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,7 +45,8 @@ class KeyRouterTests {
         replicationService = mock(PrimaryReplicationService.class);
         readService = mock(QuorumReadService.class);
         nodeClient = mock(NodeClient.class);
-        router = new KeyRouter(membership, ring, replicationService, readService, nodeClient);
+        router = new KeyRouter(
+                membership, ring, replicationService, readService, nodeClient, TestMetrics.create());
     }
 
     @Test

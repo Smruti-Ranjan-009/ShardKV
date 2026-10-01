@@ -8,6 +8,7 @@ import com.shardkv.service.KeyValueService;
 import com.shardkv.storage.RecordConflictException;
 import com.shardkv.storage.StorageException;
 import com.shardkv.storage.StoredRecord;
+import com.shardkv.observability.ShardKvMetrics;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.LongAdder;
@@ -23,6 +24,7 @@ public class ReadRepairService {
     private final ClusterMembership membership;
     private final KeyValueService localKeyValueService;
     private final NodeClient nodeClient;
+    private final ShardKvMetrics metrics;
     private final LongAdder attemptedRepairs = new LongAdder();
     private final LongAdder successfulRepairs = new LongAdder();
     private final LongAdder failedRepairs = new LongAdder();
@@ -30,10 +32,12 @@ public class ReadRepairService {
     public ReadRepairService(
             ClusterMembership membership,
             KeyValueService localKeyValueService,
-            NodeClient nodeClient) {
+            NodeClient nodeClient,
+            ShardKvMetrics metrics) {
         this.membership = membership;
         this.localKeyValueService = localKeyValueService;
         this.nodeClient = nodeClient;
+        this.metrics = metrics;
     }
 
     public RepairSummary repair(
@@ -56,13 +60,18 @@ public class ReadRepairService {
 
             attempted++;
             attemptedRepairs.increment();
+            metrics.readRepair("attempted");
             try {
                 apply(response.node(), key, record);
                 succeeded++;
                 successfulRepairs.increment();
+                metrics.readRepair("success");
+                metrics.replicationOperation("repair", true);
             } catch (NodeCommunicationException | StorageException | RecordConflictException exception) {
                 failed++;
                 failedRepairs.increment();
+                metrics.readRepair("failure");
+                metrics.replicationOperation("repair", false);
                 LOGGER.warn(
                         "Read repair for key {} on node {} failed: {}",
                         key,

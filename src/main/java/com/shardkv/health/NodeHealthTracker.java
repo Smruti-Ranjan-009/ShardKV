@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.LongAdder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import com.shardkv.observability.ShardKvMetrics;
 
 @Component
 public class NodeHealthTracker {
@@ -21,15 +22,21 @@ public class NodeHealthTracker {
     private final LongAdder successfulProbes = new LongAdder();
     private final LongAdder failedProbes = new LongAdder();
     private final LongAdder unhealthyTransitions = new LongAdder();
+    private final ShardKvMetrics metrics;
 
     public NodeHealthTracker(
             ClusterMembership membership,
-            FailureDetectionProperties properties) {
+            FailureDetectionProperties properties,
+            ShardKvMetrics metrics) {
         this.localNodeId = membership.localNode().id();
         this.failureThreshold = properties.failureThreshold();
         this.recoveryThreshold = properties.recoveryThreshold();
+        this.metrics = metrics;
         for (ClusterNode member : membership.members()) {
             observations.put(member.id(), Observation.healthy());
+        }
+        for (ClusterNode member : membership.members()) {
+            metrics.registerNodeHealth(member.id(), () -> status(member.id()));
         }
     }
 
@@ -60,6 +67,7 @@ public class NodeHealthTracker {
             int successes = current.consecutiveSuccesses() + 1;
             if (successes >= recoveryThreshold) {
                 LOGGER.info("Cluster node {} transitioned to HEALTHY", nodeId);
+                metrics.healthTransition(nodeId, current.status(), NodeHealthStatus.HEALTHY);
                 return Observation.healthy();
             }
             return new Observation(current.status(), 0, successes);
@@ -86,7 +94,11 @@ public class NodeHealthTracker {
             if (failures >= failureThreshold) {
                 unhealthyTransitions.increment();
                 LOGGER.warn("Cluster node {} transitioned to UNHEALTHY", nodeId);
+                metrics.healthTransition(nodeId, current.status(), NodeHealthStatus.UNHEALTHY);
                 return new Observation(NodeHealthStatus.UNHEALTHY, failures, 0);
+            }
+            if (current.status() != NodeHealthStatus.SUSPECT) {
+                metrics.healthTransition(nodeId, current.status(), NodeHealthStatus.SUSPECT);
             }
             return new Observation(NodeHealthStatus.SUSPECT, failures, 0);
         });

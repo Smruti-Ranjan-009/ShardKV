@@ -8,6 +8,7 @@ import com.shardkv.document.DocumentCodec;
 import com.shardkv.index.IndexKeyCodec;
 import com.shardkv.index.IndexingProperties;
 import com.shardkv.index.UnknownIndexFieldException;
+import com.shardkv.observability.ShardKvMetrics;
 import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -36,6 +37,7 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
     private final DocumentCodec documentCodec;
     private final IndexKeyCodec indexKeyCodec;
     private final IndexingProperties indexingProperties;
+    private final ShardKvMetrics metrics;
     private final ReadWriteLock lifecycleLock = new ReentrantReadWriteLock();
     private boolean closed;
 
@@ -44,7 +46,8 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
             ObjectMapper objectMapper,
             DocumentCodec documentCodec,
             IndexKeyCodec indexKeyCodec,
-            IndexingProperties indexingProperties) {
+            IndexingProperties indexingProperties,
+            ShardKvMetrics metrics) {
         Path dataDirectory = properties.dataDirectory().toAbsolutePath().normalize();
 
         loadNativeLibrary();
@@ -81,6 +84,7 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
         this.documentCodec = documentCodec;
         this.indexKeyCodec = indexKeyCodec;
         this.indexingProperties = indexingProperties;
+        this.metrics = metrics;
     }
 
     @Override
@@ -99,8 +103,13 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
                 batch.put(keyBytes, encodeRecord(record));
                 database.write(writeOptions, batch);
             }
+            metrics.storageOperation(record.tombstone() ? "delete" : "put", true);
         } catch (RocksDBException exception) {
+            metrics.storageOperation(record.tombstone() ? "delete" : "put", false);
             throw new StorageException("Failed to store value", exception);
+        } catch (RuntimeException exception) {
+            metrics.storageOperation(record.tombstone() ? "delete" : "put", false);
+            throw exception;
         } finally {
             lock.unlock();
         }
@@ -113,9 +122,17 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
         try {
             ensureOpen();
             byte[] value = database.get(encode(key));
-            return value == null ? Optional.empty() : Optional.of(decodeRecord(value));
+            Optional<StoredRecord> result = value == null
+                    ? Optional.empty()
+                    : Optional.of(decodeRecord(value));
+            metrics.storageOperation("get", true);
+            return result;
         } catch (RocksDBException exception) {
+            metrics.storageOperation("get", false);
             throw new StorageException("Failed to read value", exception);
+        } catch (RuntimeException exception) {
+            metrics.storageOperation("get", false);
+            throw exception;
         } finally {
             lock.unlock();
         }

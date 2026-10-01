@@ -7,6 +7,7 @@ import com.shardkv.cluster.ClusterMembership;
 import com.shardkv.cluster.ClusterNode;
 import com.shardkv.cluster.ClusterProperties;
 import com.shardkv.cluster.NodeProperties;
+import com.shardkv.observability.TestMetrics;
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,7 +31,8 @@ class NodeHealthTrackerTests {
                 clusterProperties);
         tracker = new NodeHealthTracker(
                 membership,
-                new FailureDetectionProperties(Duration.ofSeconds(2), 3, 2));
+                new FailureDetectionProperties(Duration.ofSeconds(2), 3, 2),
+                TestMetrics.create());
     }
 
     @Test

@@ -2,6 +2,24 @@ spring:
   application:
     name: shardkv
 
+management:
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      node: ${SHARDKV_NODE_ID:node-1}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        shardkv.query.duration: true
+
 server:
   port: ${SERVER_PORT:8081}
 

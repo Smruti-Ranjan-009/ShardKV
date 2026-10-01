@@ -13,6 +13,7 @@ import com.shardkv.service.KeyValueService;
 import com.shardkv.storage.RecordConflictException;
 import com.shardkv.storage.StorageException;
 import com.shardkv.storage.StoredRecord;
+import com.shardkv.observability.ShardKvMetrics;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -34,6 +35,7 @@ public class QuorumReadService {
     private final NodeClient nodeClient;
     private final NodeHealthTracker healthTracker;
     private final ReadRepairService readRepairService;
+    private final ShardKvMetrics metrics;
 
     public QuorumReadService(
             ClusterMembership membership,
@@ -42,7 +44,8 @@ public class QuorumReadService {
             KeyValueService localKeyValueService,
             NodeClient nodeClient,
             NodeHealthTracker healthTracker,
-            ReadRepairService readRepairService) {
+            ReadRepairService readRepairService,
+            ShardKvMetrics metrics) {
         this.membership = membership;
         this.replicaPlanner = replicaPlanner;
         this.consistencyPolicy = consistencyPolicy;
@@ -50,6 +53,7 @@ public class QuorumReadService {
         this.nodeClient = nodeClient;
         this.healthTracker = healthTracker;
         this.readRepairService = readRepairService;
+        this.metrics = metrics;
     }
 
     public String get(String key, ConsistencyLevel level) {
@@ -63,6 +67,10 @@ public class QuorumReadService {
                 : readRequired(key, plan, required);
 
         requireResponses("read", required, successfulResponses.size());
+        if (successfulResponses.stream()
+                .noneMatch(response -> response.node().id().equals(plan.primary().id()))) {
+            metrics.readFailover();
+        }
         Optional<StoredRecord> newest = reconcile(key, successfulResponses);
         readRepairService.repair(key, newest, successfulResponses);
         return logicalValue(key, newest);

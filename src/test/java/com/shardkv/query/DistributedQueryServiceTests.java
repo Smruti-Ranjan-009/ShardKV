@@ -13,6 +13,7 @@ import com.shardkv.cluster.NodeProperties;
 import com.shardkv.document.DocumentResult;
 import com.shardkv.routing.NodeClient;
 import com.shardkv.routing.NodeCommunicationException;
+import com.shardkv.observability.TestMetrics;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -88,7 +89,7 @@ class DistributedQueryServiceTests {
     private DistributedQueryService service(int maxResults) {
         return new DistributedQueryService(
                 membership, localQueryService, nodeClient,
-                new QueryProperties(maxResults, 3, 10), Runnable::run);
+                new QueryProperties(maxResults, 3, 10), Runnable::run, TestMetrics.create());
     }
 
     private DocumentResult result(String key) {

@@ -12,6 +12,7 @@ import com.shardkv.cluster.NodeProperties;
 import com.shardkv.routing.NodeClient;
 import com.shardkv.service.KeyValueService;
 import com.shardkv.storage.StoredRecord;
+import com.shardkv.observability.TestMetrics;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -38,7 +39,8 @@ class ReadRepairServiceTests {
                 properties);
         localService = mock(KeyValueService.class);
         nodeClient = mock(NodeClient.class);
-        repairService = new ReadRepairService(membership, localService, nodeClient);
+        repairService = new ReadRepairService(
+                membership, localService, nodeClient, TestMetrics.create());
     }
 
     @Test

@@ -13,6 +13,8 @@ import com.shardkv.cluster.ClusterProperties;
 import com.shardkv.cluster.NodeProperties;
 import com.shardkv.routing.NodeClient;
 import com.shardkv.routing.NodeCommunicationException;
+import com.shardkv.observability.ShardKvMetrics;
+import com.shardkv.observability.TestMetrics;
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,10 +37,12 @@ class HeartbeatMonitorTests {
                 new NodeProperties("node-1", "localhost", 8081),
                 clusterProperties);
         nodeClient = mock(NodeClient.class);
+        ShardKvMetrics metrics = TestMetrics.create();
         tracker = new NodeHealthTracker(
                 membership,
-                new FailureDetectionProperties(Duration.ofSeconds(2), 3, 2));
-        monitor = new HeartbeatMonitor(membership, nodeClient, tracker);
+                new FailureDetectionProperties(Duration.ofSeconds(2), 3, 2),
+                metrics);
+        monitor = new HeartbeatMonitor(membership, nodeClient, tracker, metrics);
     }
 
     @Test

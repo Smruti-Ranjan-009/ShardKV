@@ -9,6 +9,7 @@ import com.shardkv.routing.NodeClient;
 import com.shardkv.routing.NodeCommunicationException;
 import com.shardkv.service.KeyValueService;
 import com.shardkv.storage.StoredRecord;
+import com.shardkv.observability.ShardKvMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -23,18 +24,21 @@ public class PrimaryReplicationService {
     private final ConsistencyPolicy consistencyPolicy;
     private final KeyValueService localKeyValueService;
     private final NodeClient nodeClient;
+    private final ShardKvMetrics metrics;
 
     public PrimaryReplicationService(
             ClusterMembership membership,
             ReplicaPlanner replicaPlanner,
             ConsistencyPolicy consistencyPolicy,
             KeyValueService localKeyValueService,
-            NodeClient nodeClient) {
+            NodeClient nodeClient,
+            ShardKvMetrics metrics) {
         this.membership = membership;
         this.replicaPlanner = replicaPlanner;
         this.consistencyPolicy = consistencyPolicy;
         this.localKeyValueService = localKeyValueService;
         this.nodeClient = nodeClient;
+        this.metrics = metrics;
     }
 
     public StoredRecord put(String key, String value, ConsistencyLevel level) {
@@ -57,11 +61,14 @@ public class PrimaryReplicationService {
             ConsistencyLevel level,
             ReplicaPlan plan) {
         int successfulAcknowledgements = 1;
+        String operation = record.tombstone() ? "delete" : "put";
         for (ClusterNode replica : plan.replicas()) {
             try {
                 nodeClient.putReplica(replica, key, record);
                 successfulAcknowledgements++;
+                metrics.replicationOperation(operation, true);
             } catch (NodeCommunicationException exception) {
+                metrics.replicationOperation(operation, false);
                 LOGGER.warn(
                         "Replica {} did not acknowledge key {}: {}",
                         replica.id(),

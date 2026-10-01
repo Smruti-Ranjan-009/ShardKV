@@ -28,6 +28,8 @@ import com.shardkv.service.KeyValueService;
 import com.shardkv.storage.RecordConflictException;
 import com.shardkv.storage.StorageException;
 import com.shardkv.storage.StoredRecord;
+import com.shardkv.observability.ShardKvMetrics;
+import com.shardkv.observability.TestMetrics;
 import java.time.Duration;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,13 +61,16 @@ class QuorumReadServiceTests {
                 new ReplicationProperties(3));
         localService = mock(KeyValueService.class);
         nodeClient = mock(NodeClient.class);
+        ShardKvMetrics metrics = TestMetrics.create();
         healthTracker = new NodeHealthTracker(
                 membership,
-                new FailureDetectionProperties(Duration.ofSeconds(2), 3, 2));
+                new FailureDetectionProperties(Duration.ofSeconds(2), 3, 2),
+                metrics);
         ReadRepairService repairService = new ReadRepairService(
                 membership,
                 localService,
-                nodeClient);
+                nodeClient,
+                metrics);
         readService = new QuorumReadService(
                 membership,
                 planner,
@@ -73,7 +78,8 @@ class QuorumReadServiceTests {
                 localService,
                 nodeClient,
                 healthTracker,
-                repairService);
+                repairService,
+                metrics);
     }
 
     @Test

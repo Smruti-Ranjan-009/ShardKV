@@ -1,10 +1,10 @@
 # ShardKV
 
-ShardKV is an incremental Java project for exploring the foundations of a distributed key-value store. Phase 6 adds a deliberately small structured-document layer, durable local equality indexes, and complete-or-fail distributed query execution to the existing durable quorum-based cluster.
+ShardKV is an incremental Java project for exploring the foundations of a distributed key-value store. Phase 7 adds production-style application instrumentation and a reproducible local Prometheus/Grafana stack to the existing durable quorum-based cluster.
 
 ShardKV remains a development system. It does not automatically promote write primaries and does not claim linearizability, consensus, or complete partition tolerance.
 
-## Current status: Phase 6
+## Current status: Phase 7
 
 Implemented:
 
@@ -23,8 +23,11 @@ Implemented:
 - configured durable secondary indexes with atomic record/index writes
 - equality and AND queries with parallel all-node fan-out
 - primary-shard filtering, defensive deduplication, and bounded query results
+- Spring Boot Actuator health and Prometheus endpoints
+- low-cardinality Micrometer metrics for storage, consistency, replication, health, repair, and queries
+- provisioned Prometheus scraping and the `ShardKV Cluster Overview` Grafana dashboard
 
-Not implemented: automatic write-primary failover, dynamic membership, gossip, hinted handoff, full anti-entropy, consensus, automatic migration, SQL, range/full-text queries, or distributed index-query failover.
+Not implemented: automatic write-primary failover, dynamic membership, gossip, hinted handoff, full anti-entropy, consensus, automatic migration, SQL, range/full-text queries, distributed index-query failover, or load benchmarking.
 
 ## Architecture
 
@@ -60,11 +63,17 @@ Not implemented: automatic write-primary failover, dynamic membership, gossip, h
               |
        NodeHealthTracker
        HEALTHY / SUSPECT / UNHEALTHY
+
+       ShardKV Node 1 ----\
+       ShardKV Node 2 -----+--> Prometheus --> Grafana
+       ShardKV Node 3 ----/
 ```
 
 Every node builds the same immutable hash ring from identical static membership. SHA-256 hashes UTF-8 ring identifiers, and replica placement walks clockwise while skipping duplicate physical nodes.
 
 The deterministic primary remains the only mutation coordinator and version generator. Health state never changes ownership or promotes a replica.
+
+Instrumentation is observational: it does not change routing, acknowledgement, repair, failure-detection, or durability decisions. Spring supplies the normal HTTP server metrics; `ShardKvMetrics` centralizes domain metrics so application code does not scatter raw registry access.
 
 ## Documents and secondary indexes
 
@@ -171,6 +180,72 @@ With an available primary and one unavailable replica at RF=3:
 
 There is no distributed rollback, so an unsuccessful consistency request can leave a partial mutation on nodes that acknowledged before the failure.
 
+## Observability
+
+Spring Boot Actuator exposes only the endpoints needed by this phase:
+
+- `GET /actuator/health` for framework health.
+- `GET /actuator/prometheus` for Prometheus exposition.
+- `GET /health` remains the original ShardKV health contract.
+
+HTTP request histograms are enabled so Prometheus can calculate P50, P95, and P99 latency with `histogram_quantile`; the application does not calculate percentiles itself. Every application meter receives stable `application=shardkv` and `node=<SHARDKV_NODE_ID>` tags.
+
+Custom metrics use only bounded operation, outcome, consistency, peer, and health-state labels:
+
+| Micrometer name | Prometheus series | Meaning |
+| --- | --- | --- |
+| `shardkv.storage.operations` | `shardkv_storage_operations_total` | Logical RocksDB get/put/delete success or failure |
+| `shardkv.replication.operations` | `shardkv_replication_operations_total` | Replica put/delete/repair outcomes |
+| `shardkv.consistency.operations` | `shardkv_consistency_operations_total` | Completed ONE/QUORUM/ALL get/put/delete outcomes |
+| `shardkv.read.repair` | `shardkv_read_repair_total` | Repair attempts, successes, and failures |
+| `shardkv.read.failover` | `shardkv_read_failover_total` | Reads satisfied without a primary response |
+| `shardkv.heartbeat` | `shardkv_heartbeat_total` | Per-peer heartbeat outcomes |
+| `shardkv.node.health` | `shardkv_node_health` | Current observed peer health |
+| `shardkv.node.health.transitions` | `shardkv_node_health_transitions_total` | Bounded health-state transitions |
+| `shardkv.query.operations` | `shardkv_query_operations_total` | Distributed-query outcomes |
+| `shardkv.query.duration` | `shardkv_query_duration_seconds_*` | End-to-end query timer/histogram |
+| `shardkv.query.results` | `shardkv_query_results_*` | Successful query result-count distribution |
+| `shardkv.query.fanout.failures` | `shardkv_query_fanout_failures_total` | Failed local/remote query-shard calls |
+
+The health gauge is numeric and Grafana-friendly: `HEALTHY=1`, `SUSPECT=0.5`, and `UNHEALTHY=0`. The `node` tag identifies the observing JVM and `peer` identifies the member being observed. Keys, document values, filter values, request bodies, and arbitrary error messages are never metric tags.
+
+### Start Prometheus and Grafana
+
+First run the three ShardKV JVMs as described below. Then start only the local observability services:
+
+```powershell
+docker compose -f observability\docker-compose.yml up -d
+```
+
+The pinned images are Prometheus `v3.14.0` and Grafana OSS `13.2.2`. Prometheus reaches host JVMs through `host.docker.internal` and scrapes ports 8081, 8082, and 8083 every five seconds.
+
+Open:
+
+- Prometheus targets: http://localhost:9090/targets
+- Grafana: http://localhost:3000
+- Dashboard: `ShardKV` folder -> `ShardKV Cluster Overview`
+
+The development login defaults to `admin` / `admin`. Override it before first startup with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD`. The Prometheus datasource and dashboard are provisioned automatically; no UI setup is needed.
+
+The dashboard contains cluster-health, request-rate, HTTP P50/P95/P99 latency, GET/PUT/DELETE, consistency outcomes, replication, heartbeat, health-transition, read-failover, read-repair, distributed-query, fan-out failure, result-count, and HTTP-error panels. These are operational measurements, not benchmark results.
+
+Validate or stop the stack with:
+
+```powershell
+docker compose -f observability\docker-compose.yml config
+docker compose -f observability\docker-compose.yml down
+```
+
+Named Docker volumes hold Prometheus and Grafana runtime state; neither runtime database is stored in the repository.
+
+### Observability demonstrations
+
+Generate ordinary traffic with the KV/document/query examples in this README and watch request, consistency, replication, and query panels change. To demonstrate failure detection, stop one node, wait for the configured failure threshold, and inspect the cluster-health, heartbeat, transition, consistency, and HTTP-error panels. Restarting the node shows its recovery after the configured success threshold.
+
+For read repair, stop one replica, update a key with `QUORUM`, restart the stale replica, and perform a `QUORUM` read. The read-repair attempted/success counters will increase. Stopping a required node before `POST /query` produces HTTP 503 and increments both the query-failure and fan-out-failure series.
+
+This compose setup is intended only for local development and demonstrations. It has no TLS, hardened credentials, retention tuning, access control, or production alerting.
+
 ## Configuration
 
 | Environment variable | Default | Purpose |
@@ -223,6 +298,8 @@ Public endpoints:
 | Method | Path | Behavior |
 | --- | --- | --- |
 | `GET` | `/health` | Local service status |
+| `GET` | `/actuator/health` | Spring Boot health status |
+| `GET` | `/actuator/prometheus` | Prometheus-format application metrics |
 | `PUT` | `/kv/{key}?consistency=QUORUM` | Primary-coordinated versioned write |
 | `GET` | `/kv/{key}?consistency=QUORUM` | Health-aware reconciled read and repair |
 | `DELETE` | `/kv/{key}?consistency=ALL` | Primary-coordinated tombstone |
@@ -244,7 +321,7 @@ Example cluster health inspection:
 Example write and read:
 
 ```powershell
-$body = @{ value = "phase-5-value" } | ConvertTo-Json
+$body = @{ value = "phase-7-value" } | ConvertTo-Json
 
 Invoke-RestMethod `
     -Method Put `
@@ -325,16 +402,19 @@ java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 - There is no SQL, full-text search, regex, range query, join, aggregation, sorting API, pagination, or runtime index-schema migration.
 - Distributed queries require every physical primary-shard node; there is no query failover through replica indexes.
 - Query result sizes are bounded and over-limit results fail rather than paginate.
+- Prometheus and Grafana are local development infrastructure and are not production-secured.
+- No SLO alerts, long-term metric retention, tracing, or centralized logging are configured.
+- Dashboard observations are not load-test or benchmark claims.
 - The system does not claim linearizability or complete partition tolerance.
 
 ## Roadmap
 
-- Phase 1: Persistent storage + RocksDB WAL — complete
-- Phase 2: Static membership + consistent hashing + request routing — complete
-- Phase 3: Deterministic placement + synchronous durable replication — complete
-- Phase 4: Versioned records + tombstones + configurable quorum consistency — complete
-- Phase 5: Failure detection + read failover + read repair + scoped recovery — complete
-- Phase 6: Secondary indexes + distributed queries â€” complete
-- Phase 7: Observability
+- Phase 1: Persistent storage + RocksDB WAL - complete
+- Phase 2: Static membership + consistent hashing + request routing - complete
+- Phase 3: Deterministic placement + synchronous durable replication - complete
+- Phase 4: Versioned records + tombstones + configurable quorum consistency - complete
+- Phase 5: Failure detection + read failover + read repair + scoped recovery - complete
+- Phase 6: Secondary indexes + distributed queries - complete
+- Phase 7: Actuator + Micrometer + Prometheus + Grafana observability - complete
 - Phase 8: Scale/load testing
 - Phase 9: Docker + CI/CD + production polish
