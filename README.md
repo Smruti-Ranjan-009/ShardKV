@@ -1,10 +1,10 @@
 # ShardKV
 
-ShardKV is an incremental Java project for exploring the foundations of a distributed key-value store. Phase 5 adds timeout-based node health tracking, replica read failover, read repair, and scoped per-key recovery to the existing durable quorum-based cluster.
+ShardKV is an incremental Java project for exploring the foundations of a distributed key-value store. Phase 6 adds a deliberately small structured-document layer, durable local equality indexes, and complete-or-fail distributed query execution to the existing durable quorum-based cluster.
 
 ShardKV remains a development system. It does not automatically promote write primaries and does not claim linearizability, consensus, or complete partition tolerance.
 
-## Current status: Phase 5
+## Current status: Phase 6
 
 Implemented:
 
@@ -19,8 +19,12 @@ Implemented:
 - highest-version read reconciliation and best-effort read repair
 - bounded per-key recovery through an internal endpoint
 - durable repair using the existing replica version rules
+- structured scalar documents alongside the backward-compatible `/kv` API
+- configured durable secondary indexes with atomic record/index writes
+- equality and AND queries with parallel all-node fan-out
+- primary-shard filtering, defensive deduplication, and bounded query results
 
-Not implemented: automatic write-primary failover, dynamic membership, gossip, hinted handoff, full anti-entropy, consensus, automatic migration, or secondary indexes.
+Not implemented: automatic write-primary failover, dynamic membership, gossip, hinted handoff, full anti-entropy, consensus, automatic migration, SQL, range/full-text queries, or distributed index-query failover.
 
 ## Architecture
 
@@ -41,6 +45,17 @@ Not implemented: automatic write-primary failover, dynamic membership, gossip, h
                                             |
                                   best-effort read repair
 
+     PUT /documents/{key} --> existing versioned mutation pipeline
+                                  |
+                         RocksDB WriteBatch
+                         record + local indexes
+
+     POST /query --> parallel fan-out to every physical node
+                         |       |       |
+                    local primary-owned index matches only
+                         \       |       /
+                       merge + deduplicate + limit
+
        HeartbeatMonitor ----> configured peer /internal/health
               |
        NodeHealthTracker
@@ -50,6 +65,22 @@ Not implemented: automatic write-primary failover, dynamic membership, gossip, h
 Every node builds the same immutable hash ring from identical static membership. SHA-256 hashes UTF-8 ring identifiers, and replica placement walks clockwise while skipping duplicate physical nodes.
 
 The deterministic primary remains the only mutation coordinator and version generator. Health state never changes ownership or promotes a replica.
+
+## Documents and secondary indexes
+
+Documents contain a flat `fields` map. Supported scalar values are strings, integers/longs, finite doubles, and booleans; nested objects, arrays, and null values are rejected. An explicit versioned envelope marker distinguishes documents from arbitrary `/kv` strings. Documents use the same ownership, replication, versions, tombstones, consistency levels, read repair, recovery, RocksDB WAL, and `sync=true` durability as ordinary values.
+
+Only fields in `SHARDKV_INDEX_FIELDS` are indexed. Other valid document fields are stored but do not create index entries. Each physical replica maintains its own durable local index. A local record mutation reads the previous document and commits obsolete-index deletes, new-index puts, and the new `StoredRecord` in one RocksDB `WriteBatch`, so the record and indexes share one atomic WAL-backed update. Tombstones remove the prior document's entries. Replica application and read repair use this same local path; stale versions are rejected before they can downgrade an index.
+
+Index keys use a reserved byte prefix beginning with `0xff` (which cannot begin a valid UTF-8 user key), followed by length-prefixed UTF-8 field data, a scalar type tag, deterministic scalar bytes, and a length-prefixed UTF-8 document key. Raw index keys are never exposed by the API.
+
+## Distributed queries
+
+`POST /query` accepts one or more equality filters. Multiple filters are ANDed by intersecting index candidate sets; ShardKV does not scan all records to evaluate predicates. Each physical node answers `/internal/query` from its local indexes and returns only keys for which it is the deterministic primary. This turns replicated physical data into one logical shard result and avoids replica duplicates; the coordinator also deduplicates defensively and sorts by key.
+
+Fan-out uses a bounded Spring-managed executor and queries all nodes concurrently. A result is reported as complete only after every physical primary-shard node responds. If any required node is unavailable, the public query returns HTTP 503 rather than silently returning partial data. Point-read failover remains independent and can still succeed according to its requested consistency level.
+
+The response is capped by `SHARDKV_QUERY_MAX_RESULTS`. Exceeding the cap is rejected explicitly instead of truncating a result that might be mistaken for complete.
 
 ## Failure detection
 
@@ -157,6 +188,10 @@ There is no distributed rollback, so an unsuccessful consistency request can lea
 | `SHARDKV_FAILURE_THRESHOLD` | `3` | Consecutive failures before `UNHEALTHY` |
 | `SHARDKV_RECOVERY_THRESHOLD` | `2` | Consecutive successes before `HEALTHY` recovery |
 | `SHARDKV_DATA_DIR` | `./data` | This node's RocksDB directory |
+| `SHARDKV_INDEX_FIELDS` | `city,role,experience,active` | Comma-delimited static indexed fields |
+| `SHARDKV_QUERY_MAX_RESULTS` | `1000` | Maximum complete distributed query result |
+| `SHARDKV_QUERY_PARALLELISM` | `8` | Bounded query fan-out worker count |
+| `SHARDKV_QUERY_QUEUE_CAPACITY` | `100` | Bounded queued query-shard tasks |
 
 Thresholds and durations must be positive. Each JVM must use a separate RocksDB directory.
 
@@ -191,6 +226,10 @@ Public endpoints:
 | `PUT` | `/kv/{key}?consistency=QUORUM` | Primary-coordinated versioned write |
 | `GET` | `/kv/{key}?consistency=QUORUM` | Health-aware reconciled read and repair |
 | `DELETE` | `/kv/{key}?consistency=ALL` | Primary-coordinated tombstone |
+| `PUT` | `/documents/{key}?consistency=QUORUM` | Store/version/replicate a structured document |
+| `GET` | `/documents/{key}?consistency=QUORUM` | Reconcile and decode a document |
+| `DELETE` | `/documents/{key}?consistency=QUORUM` | Write a document tombstone and remove local indexes |
+| `POST` | `/query` | Complete distributed equality/AND query |
 | `GET` | `/cluster` | Membership and this node's health view |
 | `GET` | `/cluster/owner/{key}` | Deterministic primary |
 | `GET` | `/cluster/replicas/{key}` | Ordered placement |
@@ -216,6 +255,30 @@ Invoke-RestMethod `
 Invoke-RestMethod "http://localhost:8082/kv/customer-42?consistency=QUORUM"
 ```
 
+Document and query example:
+
+```powershell
+$document = @{
+    fields = @{
+        city = "Bengaluru"
+        role = "SDE"
+        experience = 1
+        active = $true
+    }
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Put `
+    -Uri "http://localhost:8081/documents/user-101?consistency=QUORUM" `
+    -ContentType "application/json" -Body $document
+
+$query = @{ filters = @{ city = "Bengaluru"; role = "SDE" } } |
+    ConvertTo-Json
+
+Invoke-RestMethod -Method Post `
+    -Uri "http://localhost:8082/query" `
+    -ContentType "application/json" -Body $query
+```
+
 Internal endpoints are unauthenticated development interfaces and must not be exposed to untrusted networks:
 
 - `GET /internal/health`
@@ -223,6 +286,8 @@ Internal endpoints are unauthenticated development interfaces and must not be ex
 - `PUT /internal/replica/record/{key}`
 - `PUT|DELETE /internal/primary/kv/{key}`
 - `POST /internal/recovery/{key}`
+- `POST /internal/query?limit=1001`
+- `POST /internal/index/contains/{key}` (bounded development inspection of one index membership)
 
 ## Durability and data compatibility
 
@@ -256,6 +321,10 @@ java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 - Failed writes can leave partial data; there is no distributed rollback.
 - Membership changes do not trigger migration or rebalancing.
 - Internal HTTP has no authentication or encryption.
+- Secondary indexes support equality only, over a static configured field list.
+- There is no SQL, full-text search, regex, range query, join, aggregation, sorting API, pagination, or runtime index-schema migration.
+- Distributed queries require every physical primary-shard node; there is no query failover through replica indexes.
+- Query result sizes are bounded and over-limit results fail rather than paginate.
 - The system does not claim linearizability or complete partition tolerance.
 
 ## Roadmap
@@ -265,7 +334,7 @@ java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 - Phase 3: Deterministic placement + synchronous durable replication — complete
 - Phase 4: Versioned records + tombstones + configurable quorum consistency — complete
 - Phase 5: Failure detection + read failover + read repair + scoped recovery — complete
-- Phase 6: Secondary indexes + distributed queries
+- Phase 6: Secondary indexes + distributed queries â€” complete
 - Phase 7: Observability
 - Phase 8: Scale/load testing
 - Phase 9: Docker + CI/CD + production polish

@@ -3,17 +3,26 @@ package com.shardkv.storage;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shardkv.config.StorageProperties;
+import com.shardkv.document.Document;
+import com.shardkv.document.DocumentCodec;
+import com.shardkv.index.IndexKeyCodec;
+import com.shardkv.index.IndexingProperties;
+import com.shardkv.index.UnknownIndexFieldException;
 import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
+import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
+import org.rocksdb.RocksIterator;
+import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 import org.springframework.stereotype.Repository;
 
@@ -24,10 +33,18 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
     private final WriteOptions writeOptions;
     private final RocksDB database;
     private final ObjectMapper objectMapper;
+    private final DocumentCodec documentCodec;
+    private final IndexKeyCodec indexKeyCodec;
+    private final IndexingProperties indexingProperties;
     private final ReadWriteLock lifecycleLock = new ReentrantReadWriteLock();
     private boolean closed;
 
-    public RocksDbKeyValueStore(StorageProperties properties, ObjectMapper objectMapper) {
+    public RocksDbKeyValueStore(
+            StorageProperties properties,
+            ObjectMapper objectMapper,
+            DocumentCodec documentCodec,
+            IndexKeyCodec indexKeyCodec,
+            IndexingProperties indexingProperties) {
         Path dataDirectory = properties.dataDirectory().toAbsolutePath().normalize();
 
         loadNativeLibrary();
@@ -61,6 +78,9 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
         this.options = newOptions;
         this.writeOptions = newWriteOptions;
         this.objectMapper = objectMapper;
+        this.documentCodec = documentCodec;
+        this.indexKeyCodec = indexKeyCodec;
+        this.indexingProperties = indexingProperties;
     }
 
     @Override
@@ -69,7 +89,16 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
         lock.lock();
         try {
             ensureOpen();
-            database.put(writeOptions, encode(key), encodeRecord(record));
+            byte[] keyBytes = encode(key);
+            byte[] previousBytes = database.get(keyBytes);
+            try (WriteBatch batch = new WriteBatch()) {
+                if (previousBytes != null) {
+                    removeIndexes(batch, key, decodeRecord(previousBytes));
+                }
+                addIndexes(batch, key, record);
+                batch.put(keyBytes, encodeRecord(record));
+                database.write(writeOptions, batch);
+            }
         } catch (RocksDBException exception) {
             throw new StorageException("Failed to store value", exception);
         } finally {
@@ -87,6 +116,34 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
             return value == null ? Optional.empty() : Optional.of(decodeRecord(value));
         } catch (RocksDBException exception) {
             throw new StorageException("Failed to read value", exception);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public Set<String> findByIndex(String field, Object value) {
+        if (!indexingProperties.isIndexed(field)) {
+            throw new UnknownIndexFieldException(field);
+        }
+        Object normalized = documentCodec.normalizeScalar(value);
+        byte[] prefix = indexKeyCodec.prefix(field, normalized);
+        Lock lock = lifecycleLock.readLock();
+        lock.lock();
+        try {
+            ensureOpen();
+            Set<String> keys = new LinkedHashSet<>();
+            try (RocksIterator iterator = database.newIterator()) {
+                iterator.seek(prefix);
+                while (iterator.isValid() && indexKeyCodec.hasPrefix(iterator.key(), prefix)) {
+                    keys.add(indexKeyCodec.keyFromEntry(iterator.key(), prefix.length));
+                    iterator.next();
+                }
+                iterator.status();
+            }
+            return Set.copyOf(keys);
+        } catch (RocksDBException | IllegalArgumentException exception) {
+            throw new StorageException("Failed to query secondary index", exception);
         } finally {
             lock.unlock();
         }
@@ -147,6 +204,38 @@ public final class RocksDbKeyValueStore implements KeyValueStore, AutoCloseable 
             return objectMapper.readValue(value, StoredRecord.class);
         } catch (Exception exception) {
             throw new StorageException("Failed to decode stored record", exception);
+        }
+    }
+
+    private void removeIndexes(WriteBatch batch, String key, StoredRecord record) throws RocksDBException {
+        if (record.tombstone()) {
+            return;
+        }
+        Optional<Document> document = documentCodec.decode(record.value());
+        if (document.isEmpty()) {
+            return;
+        }
+        for (String field : indexingProperties.fields()) {
+            Object value = document.get().fields().get(field);
+            if (value != null) {
+                batch.delete(indexKeyCodec.entry(field, value, key));
+            }
+        }
+    }
+
+    private void addIndexes(WriteBatch batch, String key, StoredRecord record) throws RocksDBException {
+        if (record.tombstone()) {
+            return;
+        }
+        Optional<Document> document = documentCodec.decode(record.value());
+        if (document.isEmpty()) {
+            return;
+        }
+        for (String field : indexingProperties.fields()) {
+            Object value = document.get().fields().get(field);
+            if (value != null) {
+                batch.put(indexKeyCodec.entry(field, value, key), new byte[0]);
+            }
         }
     }
 

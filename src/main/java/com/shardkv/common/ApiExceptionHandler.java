@@ -4,6 +4,11 @@ import com.shardkv.consistency.ConsistencyUnavailableException;
 import com.shardkv.routing.NodeCommunicationException;
 import com.shardkv.storage.RecordConflictException;
 import com.shardkv.storage.StorageException;
+import com.shardkv.document.DocumentTypeMismatchException;
+import com.shardkv.document.InvalidDocumentException;
+import com.shardkv.index.UnknownIndexFieldException;
+import com.shardkv.query.QueryLimitExceededException;
+import com.shardkv.query.QueryUnavailableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -60,6 +65,31 @@ public class ApiExceptionHandler {
                 HttpStatus.CONFLICT,
                 "Conflicting record contents were detected at the same version");
         problem.setTitle("Record version conflict");
+        return problem;
+    }
+
+    @ExceptionHandler({InvalidDocumentException.class, UnknownIndexFieldException.class,
+            QueryLimitExceededException.class, IllegalArgumentException.class})
+    public ProblemDetail handleInvalidQueryOrDocument(RuntimeException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, exception.getMessage());
+        problem.setTitle("Invalid document or query");
+        return problem;
+    }
+
+    @ExceptionHandler(DocumentTypeMismatchException.class)
+    public ProblemDetail handleDocumentTypeMismatch(DocumentTypeMismatchException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, exception.getMessage());
+        problem.setTitle("Stored value is not a document");
+        return problem;
+    }
+
+    @ExceptionHandler(QueryUnavailableException.class)
+    public ProblemDetail handleQueryUnavailable(QueryUnavailableException exception) {
+        LOGGER.warn("Distributed query could not reach every primary shard", exception);
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "A complete distributed query result is currently unavailable");
+        problem.setTitle("Distributed query unavailable");
         return problem;
     }
 }

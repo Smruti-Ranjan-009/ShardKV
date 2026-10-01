@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -155,5 +156,73 @@ class ShardKvApplicationTests {
     void invalidConsistencyLevelReturnsBadRequest() throws Exception {
         mockMvc.perform(get("/kv/example?consistency=INVALID"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void documentApiUsesExistingConsistencyAndReturnsStructuredFields() throws Exception {
+        mockMvc.perform(put("/documents/user-document?consistency=ALL")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"fields":{"city":"Bengaluru","role":"SDE","experience":1,"active":true}}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.key").value("user-document"))
+                .andExpect(jsonPath("$.fields.city").value("Bengaluru"));
+
+        mockMvc.perform(get("/documents/user-document?consistency=QUORUM"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fields.role").value("SDE"))
+                .andExpect(jsonPath("$.fields.experience").value(1));
+
+        mockMvc.perform(post("/internal/index/contains/user-document")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filters\":{\"city\":\"Bengaluru\"}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.present").value(true));
+    }
+
+    @Test
+    void distributedQuerySupportsAndAndDeleteRemovesIndexEntries() throws Exception {
+        putDocument("query-a", "QueryCity", "SDE");
+        putDocument("query-b", "QueryCity", "ML");
+
+        mockMvc.perform(post("/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filters\":{\"city\":\"QueryCity\",\"role\":\"SDE\"}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.complete").value(true))
+                .andExpect(jsonPath("$.nodesQueried").value(1))
+                .andExpect(jsonPath("$.count").value(1))
+                .andExpect(jsonPath("$.results[0].key").value("query-a"));
+
+        mockMvc.perform(delete("/documents/query-a?consistency=ALL"))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(post("/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filters\":{\"city\":\"QueryCity\",\"role\":\"SDE\"}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.count").value(0));
+    }
+
+    @Test
+    void unsupportedDocumentValuesAndUnknownQueryFieldsReturnBadRequest() throws Exception {
+        mockMvc.perform(put("/documents/invalid-document")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fields\":{\"city\":{\"nested\":true}}}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filters\":{\"notIndexed\":\"value\"}}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    private void putDocument(String key, String city, String role) throws Exception {
+        mockMvc.perform(put("/documents/" + key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fields\":{\"city\":\"" + city
+                                + "\",\"role\":\"" + role + "\"}}"))
+                .andExpect(status().isOk());
     }
 }

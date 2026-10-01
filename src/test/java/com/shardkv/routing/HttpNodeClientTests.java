@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.HttpMethod.DELETE;
 import static org.springframework.http.HttpMethod.GET;
 import static org.springframework.http.HttpMethod.PUT;
+import static org.springframework.http.HttpMethod.POST;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
@@ -14,6 +15,8 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import com.shardkv.cluster.ClusterNode;
 import com.shardkv.consistency.ConsistencyLevel;
 import com.shardkv.storage.StoredRecord;
+import com.shardkv.query.QueryRequest;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -99,6 +102,22 @@ class HttpNodeClientTests {
         assertThat(client.getRecord(REMOTE_NODE, "customer-42"))
                 .contains(StoredRecord.live("hello", 7));
         assertThat(client.getRecord(REMOTE_NODE, "missing")).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    void localIndexQueryUsesBoundedInternalEndpoint() {
+        server.expect(once(), requestTo("http://localhost:8082/internal/query?limit=101"))
+                .andExpect(method(POST))
+                .andExpect(content().json("{\"filters\":{\"city\":\"Bengaluru\"}}"))
+                .andRespond(withSuccess(
+                        "{\"results\":[{\"key\":\"user-1\",\"fields\":{\"city\":\"Bengaluru\"}}]}",
+                        MediaType.APPLICATION_JSON));
+
+        assertThat(client.queryLocal(
+                REMOTE_NODE, new QueryRequest(Map.of("city", "Bengaluru")), 101))
+                .extracting(result -> result.key())
+                .containsExactly("user-1");
         server.verify();
     }
 }

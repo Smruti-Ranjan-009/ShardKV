@@ -5,6 +5,10 @@ import com.shardkv.api.InternalHealthResponse;
 import com.shardkv.cluster.ClusterNode;
 import com.shardkv.consistency.ConsistencyLevel;
 import com.shardkv.storage.StoredRecord;
+import com.shardkv.document.DocumentResult;
+import com.shardkv.query.LocalQueryResponse;
+import com.shardkv.query.QueryRequest;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
@@ -19,6 +23,7 @@ public class HttpNodeClient implements NodeClient {
     private static final String INTERNAL_HEALTH_PATH = "/internal/health";
     private static final String INTERNAL_REPLICA_RECORD_PATH = "/internal/replica/record/{key}";
     private static final String INTERNAL_RECORD_PATH = "/internal/record/{key}";
+    private static final String INTERNAL_QUERY_PATH = "/internal/query?limit={limit}";
 
     private final RestClient restClient;
 
@@ -103,6 +108,23 @@ public class HttpNodeClient implements NodeClient {
             return Optional.empty();
         } catch (RestClientException exception) {
             throw new NodeCommunicationException(node.id(), "read stored record", exception);
+        }
+    }
+
+    @Override
+    public List<DocumentResult> queryLocal(ClusterNode node, QueryRequest request, int limit) {
+        try {
+            LocalQueryResponse response = restClient.post()
+                    .uri(node.baseUri() + INTERNAL_QUERY_PATH, limit)
+                    .body(request)
+                    .retrieve()
+                    .body(LocalQueryResponse.class);
+            if (response == null) {
+                throw new NodeCommunicationException(node.id(), "query local secondary index");
+            }
+            return response.results();
+        } catch (RestClientException exception) {
+            throw new NodeCommunicationException(node.id(), "query local secondary index", exception);
         }
     }
 }

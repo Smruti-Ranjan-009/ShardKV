@@ -25,3 +25,9 @@ shardkv:
     recovery-threshold: ${SHARDKV_RECOVERY_THRESHOLD:2}
   storage:
     data-dir: ${SHARDKV_DATA_DIR:./data}
+  indexing:
+    fields: ${SHARDKV_INDEX_FIELDS:city,role,experience,active}
+  query:
+    max-results: ${SHARDKV_QUERY_MAX_RESULTS:1000}
+    parallelism: ${SHARDKV_QUERY_PARALLELISM:8}
+    queue-capacity: ${SHARDKV_QUERY_QUEUE_CAPACITY:100}
