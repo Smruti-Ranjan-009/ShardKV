@@ -1,122 +1,168 @@
 # ShardKV
 
-ShardKV is an incremental Java project for exploring the foundations of a distributed key-value store. Phase 4 adds configurable quorum-based consistency to the existing durable, statically configured cluster. It is still a development system, not a production database.
+ShardKV is an incremental Java project for exploring the foundations of a distributed key-value store. Phase 5 adds timeout-based node health tracking, replica read failover, read repair, and scoped per-key recovery to the existing durable quorum-based cluster.
 
-## Current status: Phase 4
+ShardKV remains a development system. It does not automatically promote write primaries and does not claim linearizability, consensus, or complete partition tolerance.
+
+## Current status: Phase 5
 
 Implemented:
 
 - Java 17, Spring Boot 3, and the Maven Wrapper
 - RocksDB storage with native WAL enabled and `sync=true`
-- static cluster membership and stable node identities
-- deterministic SHA-256 consistent hashing with configurable virtual nodes
+- static membership, SHA-256 consistent hashing, and virtual nodes
 - deterministic primary and replica placement
-- configurable replication factor
-- `ONE`, `QUORUM`, and `ALL` consistency for PUT, GET, and DELETE
-- primary-generated record versions and durable tombstones
-- highest-version reconciliation during distributed reads
-- cluster, owner, and replica-placement inspection endpoints
+- versioned records and durable tombstones
+- `ONE`, `QUORUM`, and `ALL` consistency
+- heartbeat-based `HEALTHY`, `SUSPECT`, and `UNHEALTHY` tracking
+- health-aware replica reads and read failover
+- highest-version read reconciliation and best-effort read repair
+- bounded per-key recovery through an internal endpoint
+- durable repair using the existing replica version rules
 
-Not implemented: dynamic membership, failure detection, automatic primary failover, read repair, hinted handoff, anti-entropy, tombstone garbage collection, consensus, or automatic data migration.
+Not implemented: automatic write-primary failover, dynamic membership, gossip, hinted handoff, full anti-entropy, consensus, automatic migration, or secondary indexes.
 
 ## Architecture
 
 ```text
-                              Client
-                                |
-                         any ShardKV node
-                                |
-                            KeyRouter
-                     writes /          \ reads
-                           /            \
-               deterministic primary   assigned replica set
-                         |              /       |       \
-               version + tombstone   primary  replica  replica
-                         |              \       |       /
-                  durable local write    highest-version
-                         |                reconciliation
-                 replica propagation
-                    /           \
-             RocksDB + WAL   RocksDB + WAL
+                           Client
+                             |
+                      any ShardKV node
+                             |
+                         KeyRouter
+                 writes /               \ reads
+                       /                 \
+          deterministic primary      ReplicaPlanner
+                    |                 /     |     \
+          versioned durable write  primary replica replica
+                    |                 \     |     /
+            synchronous replicas     health-aware reads
+                                      highest version
+                                            |
+                                  best-effort read repair
+
+       HeartbeatMonitor ----> configured peer /internal/health
+              |
+       NodeHealthTracker
+       HEALTHY / SUSPECT / UNHEALTHY
 ```
 
-Every node constructs the same immutable hash ring from identical membership configuration. UTF-8 ring identifiers are hashed with SHA-256; the first 64 bits form an unsigned ring position. Each physical node receives positions derived from `<node-id>#<virtual-node-index>`. Replica placement walks clockwise from the primary and skips repeated virtual nodes belonging to an already selected physical node.
+Every node builds the same immutable hash ring from identical static membership. SHA-256 hashes UTF-8 ring identifiers, and replica placement walks clockwise while skipping duplicate physical nodes.
 
-## Consistency model
+The deterministic primary remains the only mutation coordinator and version generator. Health state never changes ownership or promotes a replica.
 
-For replication factor `N`, the required successful node responses are:
+## Failure detection
 
-| Level | Required responses |
+Each node periodically probes every other configured member through:
+
+```http
+GET /internal/health
+```
+
+The endpoint returns only the local node ID and `UP` status. Heartbeats run with fixed delay on a Spring-managed scheduler containing one thread, so executions do not overlap and the scheduler shuts down with the application.
+
+Default state transitions are:
+
+```text
+HEALTHY
+  -- first failed probe --> SUSPECT
+  -- 3 consecutive failures --> UNHEALTHY
+
+SUSPECT or UNHEALTHY
+  -- 2 consecutive successes --> HEALTHY
+```
+
+A failed probe resets the recovery-success sequence. A successful recovery probe resets the failure sequence. The local node is always reported as `HEALTHY` by its own process.
+
+This is a timeout-based detector, not a perfect distributed failure detector. Network delay or partitions can produce temporary false suspicions and different nodes can hold different health views. Real request results remain authoritative; health is used only to order or defer read attempts.
+
+## Read behavior and failover
+
+For replication factor `N`:
+
+| Level | Required successful responses |
 | --- | --- |
 | `ONE` | `1` |
 | `QUORUM` | `floor(N / 2) + 1` |
 | `ALL` | `N` |
 
-The primary's durable local mutation counts as one write acknowledgement. The default is `QUORUM` and can be overridden globally or per request.
+`ONE` prefers the primary while it is healthy. If the primary is unhealthy or an actual request to it fails, the coordinator tries assigned replicas in health order.
 
-For PUT and DELETE, a request entering a non-primary is forwarded once to the primary. The primary serializes mutations for that key with one of 256 bounded striped locks, reads its current local version, increments it, durably writes the new record, and sends that exact record to every assigned replica. The lock covers version generation and the primary write; replica propagation follows after the local mutation is established. There is no distributed lock.
+`QUORUM` gathers assigned-node responses and can succeed without the primary when enough replicas respond. `ALL` still requires every assigned node; a failed node causes HTTP 503.
 
-Replica calls are currently attempted synchronously in deterministic order. The coordinator waits for every attempted call to finish and then evaluates the requested threshold. This implements the acknowledgement semantics but does not yet optimize ONE or QUORUM latency by returning early.
+Reads never contact nodes outside the key's deterministic replica set. A successful no-record response counts toward consistency, while a timeout or server failure does not. Reconciliation selects the highest version; a highest-version tombstone produces public HTTP 404.
 
-Reads may be coordinated by any node. The coordinator requests metadata from every assigned node, counts a successful "no record" response as a response, and distinguishes it from transport or server failure. It returns the contents of the highest-version record once the requested response count is available. A highest-version tombstone is exposed to the public client as `404 Not Found`.
+## Read repair
 
-For replication factor `N`, read and write sets intersect when `R + W > N`. For example, RF=3 with QUORUM reads and writes uses `R=2` and `W=2`. This provides configurable quorum-based consistency under the system's stated assumptions; ShardKV does not claim linearizability or consensus.
+QUORUM and ALL reads inspect all non-`UNHEALTHY` assigned nodes. After consistency is satisfied and the highest record is established, stale or missing successful responders receive the authoritative record:
 
-## Versioned records and deletes
-
-RocksDB values are JSON-encoded records with this internal shape:
-
-```json
-{
-  "value": "hello",
-  "version": 7,
-  "tombstone": false
-}
+```text
+v5, v4, v5                  -> return v5; repair v4 to v5
+tombstone v8, live v7, v8  -> return 404; repair live v7 with tombstone v8
+missing, v3, v3            -> return v3; repair missing copy with v3
 ```
 
-A deletion stores a newer record rather than physically deleting the key:
+Replica application remains version-safe: newer incoming versions are applied, older versions are ignored, identical retries are idempotent, and contradictory content at the same version fails.
 
-```json
-{
-  "value": null,
-  "version": 8,
-  "tombstone": true
-}
+Repair currently runs synchronously after reconciliation. Repair failures are logged and counted but do not fail a read whose requested consistency was already satisfied. Unreachable replicas cannot be repaired until they respond again.
+
+## Controlled recovery
+
+The bounded internal endpoint:
+
+```http
+POST /internal/recovery/{key}
 ```
 
-Only the deterministic primary generates versions. The first mutation is version 1; every later PUT or DELETE increments the primary's current version. A PUT after a tombstone creates a newer live record.
+queries only that key's assigned replica set, requires a QUORUM of successful responses, selects the highest version, and repairs stale or missing successful copies. It does not scan RocksDB, route through the public API, recurse, generate versions, or change ownership.
 
-Replicas apply newer versions, accept identical same-version retries as idempotent, and ignore older versions. Contradictory records at the same version fail as an invariant violation. Tombstones prevent an older live replica from winning a quorum read after it missed a delete. Tombstones are not garbage-collected in Phase 4.
+Example:
 
-Phase 3 databases stored raw string values and are not automatically migrated. Delete existing development data directories before first running Phase 4, or use new directories.
+```powershell
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8081/internal/recovery/customer-42"
+```
 
-## Prerequisites
+Read repair and controlled recovery both write through the direct replica endpoint, so repaired live values and tombstones use RocksDB's WAL and `sync=true` before acknowledgement.
 
-- Java 17
-- PowerShell on Windows
+## Write behavior
 
-Maven does not need to be installed globally. Use the checked-in Maven Wrapper for every build command.
+PUT and DELETE continue to route exactly once to the deterministic primary. The primary serializes same-key version generation with bounded striped locks, writes locally, and propagates the exact record to replicas.
+
+If the primary is unavailable, PUT and DELETE fail for `ONE`, `QUORUM`, and `ALL`. A replica is never promoted automatically.
+
+With an available primary and one unavailable replica at RF=3:
+
+- `ONE` can succeed with the primary durable write.
+- `QUORUM` can succeed with the primary and one replica.
+- `ALL` fails.
+
+There is no distributed rollback, so an unsuccessful consistency request can leave a partial mutation on nodes that acknowledged before the failure.
 
 ## Configuration
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `SERVER_PORT` | `8081` | HTTP port and advertised node port |
-| `SHARDKV_NODE_ID` | `node-1` | Stable unique ID for this process |
+| `SERVER_PORT` | `8081` | HTTP and advertised node port |
+| `SHARDKV_NODE_ID` | `node-1` | Stable local node ID |
 | `SHARDKV_NODE_HOST` | `localhost` | Address advertised to peers |
 | `SHARDKV_CLUSTER_MEMBERS` | three local nodes | Semicolon-delimited `id,host,port` entries |
 | `SHARDKV_VIRTUAL_NODES` | `128` | Ring positions per physical node |
 | `SHARDKV_REPLICATION_FACTOR` | `3` | Distinct physical copies per key |
 | `SHARDKV_DEFAULT_CONSISTENCY` | `QUORUM` | Default `ONE`, `QUORUM`, or `ALL` |
-| `SHARDKV_CONNECT_TIMEOUT` | `2s` | Peer HTTP connection timeout |
-| `SHARDKV_READ_TIMEOUT` | `5s` | Peer HTTP response timeout |
+| `SHARDKV_CONNECT_TIMEOUT` | `2s` | Peer connection timeout |
+| `SHARDKV_READ_TIMEOUT` | `5s` | Peer response timeout |
+| `SHARDKV_HEARTBEAT_INTERVAL` | `2s` | Delay between heartbeat rounds |
+| `SHARDKV_FAILURE_THRESHOLD` | `3` | Consecutive failures before `UNHEALTHY` |
+| `SHARDKV_RECOVERY_THRESHOLD` | `2` | Consecutive successes before `HEALTHY` recovery |
 | `SHARDKV_DATA_DIR` | `./data` | This node's RocksDB directory |
 
-Replication factor must be at least one and cannot exceed the physical member count. Every JVM must use a distinct RocksDB directory; two processes must never open the same writable directory simultaneously. Startup also rejects empty membership, duplicate IDs, invalid ports, invalid virtual-node counts, or a missing/mismatched local node.
+Thresholds and durations must be positive. Each JVM must use a separate RocksDB directory.
 
 ## Run three nodes locally
 
-Open three PowerShell terminals in the repository. All nodes must use identical membership, replication factor, and default consistency.
+Open three PowerShell terminals. All nodes must share membership, replication factor, consistency, and failure-detection settings.
 
 Terminal 1:
 
@@ -124,107 +170,65 @@ Terminal 1:
 $env:SHARDKV_CLUSTER_MEMBERS = "node-1,localhost,8081;node-2,localhost,8082;node-3,localhost,8083"
 $env:SHARDKV_REPLICATION_FACTOR = "3"
 $env:SHARDKV_DEFAULT_CONSISTENCY = "QUORUM"
+$env:SHARDKV_HEARTBEAT_INTERVAL = "2s"
+$env:SHARDKV_FAILURE_THRESHOLD = "3"
+$env:SHARDKV_RECOVERY_THRESHOLD = "2"
 $env:SERVER_PORT = "8081"
 $env:SHARDKV_NODE_ID = "node-1"
-$env:SHARDKV_NODE_HOST = "localhost"
 $env:SHARDKV_DATA_DIR = ".\data\node-1"
 .\mvnw.cmd spring-boot:run
 ```
 
-Terminal 2:
+Terminal 2 uses port `8082`, node ID `node-2`, and `data\node-2`. Terminal 3 uses port `8083`, node ID `node-3`, and `data\node-3`; all other variables remain identical.
 
-```powershell
-$env:SHARDKV_CLUSTER_MEMBERS = "node-1,localhost,8081;node-2,localhost,8082;node-3,localhost,8083"
-$env:SHARDKV_REPLICATION_FACTOR = "3"
-$env:SHARDKV_DEFAULT_CONSISTENCY = "QUORUM"
-$env:SERVER_PORT = "8082"
-$env:SHARDKV_NODE_ID = "node-2"
-$env:SHARDKV_NODE_HOST = "localhost"
-$env:SHARDKV_DATA_DIR = ".\data\node-2"
-.\mvnw.cmd spring-boot:run
-```
+## API
 
-Terminal 3:
-
-```powershell
-$env:SHARDKV_CLUSTER_MEMBERS = "node-1,localhost,8081;node-2,localhost,8082;node-3,localhost,8083"
-$env:SHARDKV_REPLICATION_FACTOR = "3"
-$env:SHARDKV_DEFAULT_CONSISTENCY = "QUORUM"
-$env:SERVER_PORT = "8083"
-$env:SHARDKV_NODE_ID = "node-3"
-$env:SHARDKV_NODE_HOST = "localhost"
-$env:SHARDKV_DATA_DIR = ".\data\node-3"
-.\mvnw.cmd spring-boot:run
-```
-
-For a standalone process, set a one-node membership and replication factor one. All three consistency levels then require one response.
-
-## Public API
+Public endpoints:
 
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `GET` | `/health` | Service status |
-| `PUT` | `/kv/{key}?consistency=QUORUM` | Creates a new version and replicates it |
-| `GET` | `/kv/{key}?consistency=QUORUM` | Reconciles assigned copies by version |
-| `DELETE` | `/kv/{key}?consistency=ALL` | Creates and replicates a tombstone |
-| `GET` | `/cluster` | Local node and configured members |
-| `GET` | `/cluster/owner/{key}` | Primary owner |
-| `GET` | `/cluster/replicas/{key}` | Ordered primary and replicas |
+| `GET` | `/health` | Local service status |
+| `PUT` | `/kv/{key}?consistency=QUORUM` | Primary-coordinated versioned write |
+| `GET` | `/kv/{key}?consistency=QUORUM` | Health-aware reconciled read and repair |
+| `DELETE` | `/kv/{key}?consistency=ALL` | Primary-coordinated tombstone |
+| `GET` | `/cluster` | Membership and this node's health view |
+| `GET` | `/cluster/owner/{key}` | Deterministic primary |
+| `GET` | `/cluster/replicas/{key}` | Ordered placement |
 
-The `consistency` query parameter is optional and case-sensitive; omitting it uses `SHARDKV_DEFAULT_CONSISTENCY`. An unsupported value returns HTTP 400.
+Example cluster health inspection:
 
 ```powershell
-$body = @{ value = "quorum-value" } | ConvertTo-Json
+(Invoke-RestMethod http://localhost:8081/cluster).members |
+    Format-Table id, host, port, status
+```
+
+Example write and read:
+
+```powershell
+$body = @{ value = "phase-5-value" } | ConvertTo-Json
 
 Invoke-RestMethod `
     -Method Put `
-    -Uri "http://localhost:8081/kv/customer-42?consistency=QUORUM" `
+    -Uri "http://localhost:8081/kv/customer-42?consistency=ALL" `
     -ContentType "application/json" `
     -Body $body
 
 Invoke-RestMethod "http://localhost:8082/kv/customer-42?consistency=QUORUM"
-
-Invoke-RestMethod `
-    -Method Delete `
-    -Uri "http://localhost:8083/kv/customer-42?consistency=ALL"
 ```
 
-## Internal API and inspection
+Internal endpoints are unauthenticated development interfaces and must not be exposed to untrusted networks:
 
-Internal endpoints bypass public routing and must not be exposed to untrusted networks:
+- `GET /internal/health`
+- `GET /internal/record/{key}`
+- `PUT /internal/replica/record/{key}`
+- `PUT|DELETE /internal/primary/kv/{key}`
+- `POST /internal/recovery/{key}`
 
-- `PUT` or `DELETE /internal/primary/kv/{key}?consistency=...` executes only on the primary and coordinates replication.
-- `PUT /internal/replica/record/{key}` applies a complete versioned record locally and never forwards or replicates.
-- `GET /internal/record/{key}` returns the local complete record, including tombstone metadata, or 404 for no record.
-- `GET /internal/kv/{key}` returns only a local live value and treats tombstones as 404.
+## Durability and data compatibility
 
-Inspect physical copies during development:
+Primary writes, replica writes, tombstones, read repairs, and recovery repairs all use RocksDB's native WAL with `sync=true`. ShardKV does not implement a second application-level WAL.
 
-```powershell
-Invoke-RestMethod http://localhost:8081/internal/record/customer-42
-Invoke-RestMethod http://localhost:8082/internal/record/customer-42
-Invoke-RestMethod http://localhost:8083/internal/record/customer-42
-```
-
-The internal HTTP API is unauthenticated and unencrypted in this phase.
-
-## Failure and stale-replica behavior
-
-With RF=3, stop one replica while leaving the primary and the other replica running:
-
-- `PUT ...?consistency=ALL` fails with HTTP 503.
-- `PUT ...?consistency=QUORUM` can succeed with two durable acknowledgements.
-- `PUT ...?consistency=ONE` can succeed after the primary durable write.
-
-All assigned replicas are still attempted. A failed consistency request can therefore leave a partial mutation on nodes that already acknowledged; there is no distributed rollback.
-
-After a missed update, a restarted replica can remain stale. A QUORUM read compares successful responses and returns the newest record but deliberately does not repair the stale copy. The same rule applies to deletion: a newer tombstone wins over an older live value and produces public HTTP 404.
-
-PUT and DELETE have no primary failover. If the primary is unavailable, mutation requests fail. GET can use any successful assigned responses, including replicas, if its requested threshold is met; failures are discovered from actual HTTP attempts rather than a failure detector.
-
-## Durability
-
-Every local primary or replica mutation uses RocksDB's native WAL with `sync=true` before acknowledging. ShardKV does not implement a redundant application-level WAL. Versions, live values, and tombstones survive clean process restart when the same node-specific data directories are reused.
+Phase 3 raw string values are not automatically migrated to the versioned Phase 4/5 format. Use fresh development directories when upgrading from Phase 3 data.
 
 ## Test and package
 
@@ -241,18 +245,18 @@ java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 
 ## Limitations
 
-- Membership is static and must be identical on every node.
-- Mutations are coordinated only by the deterministic primary; there is no automatic primary failover.
-- Replication calls are synchronous and currently attempted sequentially.
-- No failure detector or heartbeat subsystem exists.
-- No read repair, hinted handoff, anti-entropy, or stale-copy recovery exists.
+- Membership and ownership are static.
+- Health observations are local, timeout-based hints and can disagree during partitions.
+- No automatic write-primary failover or replica promotion exists.
+- No dynamic membership, gossip, leader election, Raft, or other consensus exists.
+- No hinted handoff or full background anti-entropy exists.
+- Recovery is explicitly bounded to one requested key.
+- Read repair is synchronous and only repairs nodes that successfully responded.
 - Tombstones are retained indefinitely; garbage collection is not implemented.
-- No distributed transaction or rollback exists, so failed operations can leave partial data.
-- Changing membership can change placement, but there is no data migration or rebalancing.
-- Internal traffic has no authentication or encryption.
-- There is no gossip, Raft, leader election, or other consensus protocol.
-- Phase 3 raw-value RocksDB files are not migrated automatically.
-- Configurable quorums do not by themselves imply linearizability or full fault tolerance.
+- Failed writes can leave partial data; there is no distributed rollback.
+- Membership changes do not trigger migration or rebalancing.
+- Internal HTTP has no authentication or encryption.
+- The system does not claim linearizability or complete partition tolerance.
 
 ## Roadmap
 
@@ -260,7 +264,7 @@ java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 - Phase 2: Static membership + consistent hashing + request routing — complete
 - Phase 3: Deterministic placement + synchronous durable replication — complete
 - Phase 4: Versioned records + tombstones + configurable quorum consistency — complete
-- Phase 5: Failure detection + recovery
+- Phase 5: Failure detection + read failover + read repair + scoped recovery — complete
 - Phase 6: Secondary indexes + distributed queries
 - Phase 7: Observability
 - Phase 8: Scale/load testing

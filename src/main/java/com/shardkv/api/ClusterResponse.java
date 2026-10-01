@@ -5,6 +5,10 @@ import java.util.List;
 
 public record ClusterResponse(
         ClusterNode localNode,
-        List<ClusterNode> members,
+        List<ClusterMemberResponse> members,
         int virtualNodesPerNode) {
+
+    public ClusterResponse {
+        members = List.copyOf(members);
+    }
 }

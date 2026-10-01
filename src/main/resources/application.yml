@@ -19,5 +19,9 @@ shardkv:
     factor: ${SHARDKV_REPLICATION_FACTOR:3}
   consistency:
     default-level: ${SHARDKV_DEFAULT_CONSISTENCY:QUORUM}
+  failure-detection:
+    interval: ${SHARDKV_HEARTBEAT_INTERVAL:2s}
+    failure-threshold: ${SHARDKV_FAILURE_THRESHOLD:3}
+    recovery-threshold: ${SHARDKV_RECOVERY_THRESHOLD:2}
   storage:
     data-dir: ${SHARDKV_DATA_DIR:./data}

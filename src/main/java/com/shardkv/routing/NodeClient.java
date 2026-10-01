@@ -7,6 +7,8 @@ import java.util.Optional;
 
 public interface NodeClient {
 
+    void heartbeat(ClusterNode node);
+
     void putPrimary(ClusterNode node, String key, String value, ConsistencyLevel consistencyLevel);
 
     void deletePrimary(ClusterNode node, String key, ConsistencyLevel consistencyLevel);

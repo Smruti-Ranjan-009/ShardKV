@@ -37,6 +37,7 @@ class ShardKvApplicationTests {
         registry.add("shardkv.cluster.members", () -> "node-1,localhost,8080");
         registry.add("shardkv.replication.factor", () -> 1);
         registry.add("shardkv.consistency.default-level", () -> "QUORUM");
+        registry.add("shardkv.failure-detection.interval", () -> "1h");
     }
 
     @Autowired
@@ -108,7 +109,16 @@ class ShardKvApplicationTests {
                 .andExpect(jsonPath("$.localNode.id").value("node-1"))
                 .andExpect(jsonPath("$.members.length()").value(1))
                 .andExpect(jsonPath("$.members[0].id").value("node-1"))
+                .andExpect(jsonPath("$.members[0].status").value("HEALTHY"))
                 .andExpect(jsonPath("$.virtualNodesPerNode").value(128));
+    }
+
+    @Test
+    void internalHealthEndpointIdentifiesLocalNode() throws Exception {
+        mockMvc.perform(get("/internal/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nodeId").value("node-1"))
+                .andExpect(jsonPath("$.status").value("UP"));
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.shardkv.routing;
 
 import com.shardkv.api.PutValueRequest;
+import com.shardkv.api.InternalHealthResponse;
 import com.shardkv.cluster.ClusterNode;
 import com.shardkv.consistency.ConsistencyLevel;
 import com.shardkv.storage.StoredRecord;
@@ -15,6 +16,7 @@ public class HttpNodeClient implements NodeClient {
 
     private static final String INTERNAL_PRIMARY_KEY_PATH =
             "/internal/primary/kv/{key}?consistency={consistency}";
+    private static final String INTERNAL_HEALTH_PATH = "/internal/health";
     private static final String INTERNAL_REPLICA_RECORD_PATH = "/internal/replica/record/{key}";
     private static final String INTERNAL_RECORD_PATH = "/internal/record/{key}";
 
@@ -22,6 +24,23 @@ public class HttpNodeClient implements NodeClient {
 
     public HttpNodeClient(RestClient restClient) {
         this.restClient = restClient;
+    }
+
+    @Override
+    public void heartbeat(ClusterNode node) {
+        try {
+            InternalHealthResponse response = restClient.get()
+                    .uri(node.baseUri() + INTERNAL_HEALTH_PATH)
+                    .retrieve()
+                    .body(InternalHealthResponse.class);
+            if (response == null
+                    || !node.id().equals(response.nodeId())
+                    || !"UP".equals(response.status())) {
+                throw new NodeCommunicationException(node.id(), "validate heartbeat");
+            }
+        } catch (RestClientException exception) {
+            throw new NodeCommunicationException(node.id(), "perform heartbeat", exception);
+        }
     }
 
     @Override

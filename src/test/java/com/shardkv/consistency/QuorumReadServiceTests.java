@@ -2,7 +2,12 @@ package com.shardkv.consistency;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.shardkv.cluster.ClusterMembership;
@@ -11,6 +16,9 @@ import com.shardkv.cluster.ClusterProperties;
 import com.shardkv.cluster.ConsistentHashRing;
 import com.shardkv.cluster.NodeProperties;
 import com.shardkv.common.KeyNotFoundException;
+import com.shardkv.health.FailureDetectionProperties;
+import com.shardkv.health.NodeHealthStatus;
+import com.shardkv.health.NodeHealthTracker;
 import com.shardkv.replication.ReplicaPlan;
 import com.shardkv.replication.ReplicaPlanner;
 import com.shardkv.replication.ReplicationProperties;
@@ -18,6 +26,7 @@ import com.shardkv.routing.NodeClient;
 import com.shardkv.routing.NodeCommunicationException;
 import com.shardkv.service.KeyValueService;
 import com.shardkv.storage.RecordConflictException;
+import com.shardkv.storage.StorageException;
 import com.shardkv.storage.StoredRecord;
 import java.time.Duration;
 import java.util.Optional;
@@ -32,6 +41,7 @@ class QuorumReadServiceTests {
     private ReplicaPlanner planner;
     private KeyValueService localService;
     private NodeClient nodeClient;
+    private NodeHealthTracker healthTracker;
     private QuorumReadService readService;
 
     @BeforeEach
@@ -49,103 +59,228 @@ class QuorumReadServiceTests {
                 new ReplicationProperties(3));
         localService = mock(KeyValueService.class);
         nodeClient = mock(NodeClient.class);
+        healthTracker = new NodeHealthTracker(
+                membership,
+                new FailureDetectionProperties(Duration.ofSeconds(2), 3, 2));
+        ReadRepairService repairService = new ReadRepairService(
+                membership,
+                localService,
+                nodeClient);
         readService = new QuorumReadService(
                 membership,
                 planner,
                 new ConsistencyPolicy(new ConsistencyProperties(ConsistencyLevel.QUORUM)),
                 localService,
-                nodeClient);
+                nodeClient,
+                healthTracker,
+                repairService);
     }
 
     @Test
-    void quorumSelectsHighestVersionAcrossSuccessfulResponses() {
+    void quorumSelectsHighestVersionAndRepairsStaleLiveReplica() {
         ReplicaPlan plan = planner.planFor(KEY);
-        respond(plan.primary(), Optional.of(StoredRecord.live("new", 5)));
-        respond(plan.replicas().get(0), Optional.of(StoredRecord.live("old", 4)));
-        respond(plan.replicas().get(1), Optional.of(StoredRecord.live("new", 5)));
+        StoredRecord newest = StoredRecord.live("new", 5);
+        ClusterNode staleNode = plan.replicas().get(0);
+        respond(plan.primary(), KEY, Optional.of(newest));
+        respond(staleNode, KEY, Optional.of(StoredRecord.live("old", 4)));
+        respond(plan.replicas().get(1), KEY, Optional.of(newest));
+
+        assertThat(readService.get(KEY, ConsistencyLevel.QUORUM)).isEqualTo("new");
+
+        verifyRepair(staleNode, KEY, newest);
+    }
+
+    @Test
+    void newerTombstoneWinsAndRepairsStaleLiveReplicaBeforeReturningNotFound() {
+        ReplicaPlan plan = planner.planFor(KEY);
+        StoredRecord tombstone = StoredRecord.tombstone(8);
+        ClusterNode staleNode = plan.replicas().get(0);
+        respond(plan.primary(), KEY, Optional.of(tombstone));
+        respond(staleNode, KEY, Optional.of(StoredRecord.live("stale", 7)));
+        respond(plan.replicas().get(1), KEY, Optional.of(tombstone));
+
+        assertThatThrownBy(() -> readService.get(KEY, ConsistencyLevel.QUORUM))
+                .isInstanceOf(KeyNotFoundException.class);
+
+        verifyRepair(staleNode, KEY, tombstone);
+    }
+
+    @Test
+    void missingRecordCountsAsSuccessAndIsRepairedFromAuthoritativeVersion() {
+        ReplicaPlan plan = planner.planFor(KEY);
+        ClusterNode missingNode = plan.primary();
+        StoredRecord newest = StoredRecord.live("found", 3);
+        respond(missingNode, KEY, Optional.empty());
+        respond(plan.replicas().get(0), KEY, Optional.of(newest));
+        respond(plan.replicas().get(1), KEY, Optional.of(newest));
+
+        assertThat(readService.get(KEY, ConsistencyLevel.QUORUM)).isEqualTo("found");
+
+        verifyRepair(missingNode, KEY, newest);
+    }
+
+    @Test
+    void oneSkipsUnhealthyPrimaryAndReadsAHealthyReplica() {
+        String key = keyPrimaryOn("node-2");
+        ReplicaPlan plan = planner.planFor(key);
+        markUnhealthy(plan.primary());
+        respond(plan.replicas().get(0), key, Optional.of(StoredRecord.live("replica", 3)));
+
+        assertThat(readService.get(key, ConsistencyLevel.ONE)).isEqualTo("replica");
+
+        verify(nodeClient, never()).getRecord(plan.primary(), key);
+    }
+
+    @Test
+    void oneFallsBackWhenApparentlyHealthyPrimaryActuallyFails() {
+        ReplicaPlan plan = planner.planFor(KEY);
+        fail(plan.primary(), KEY);
+        respond(plan.replicas().get(0), KEY, Optional.of(StoredRecord.live("replica-value", 3)));
+
+        assertThat(readService.get(KEY, ConsistencyLevel.ONE)).isEqualTo("replica-value");
+    }
+
+    @Test
+    void quorumSucceedsFromTwoReplicasWhenPrimaryIsUnavailable() {
+        ReplicaPlan plan = planner.planFor(KEY);
+        fail(plan.primary(), KEY);
+        respond(plan.replicas().get(0), KEY, Optional.of(StoredRecord.live("old", 4)));
+        respond(plan.replicas().get(1), KEY, Optional.of(StoredRecord.live("new", 5)));
 
         assertThat(readService.get(KEY, ConsistencyLevel.QUORUM)).isEqualTo("new");
     }
 
     @Test
-    void newerTombstoneWinsOverOlderLiveValue() {
-        ReplicaPlan plan = planner.planFor(KEY);
-        respond(plan.primary(), Optional.of(StoredRecord.tombstone(8)));
-        respond(plan.replicas().get(0), Optional.of(StoredRecord.live("stale", 7)));
-        respond(plan.replicas().get(1), Optional.of(StoredRecord.tombstone(8)));
-
-        assertThatThrownBy(() -> readService.get(KEY, ConsistencyLevel.QUORUM))
-                .isInstanceOf(KeyNotFoundException.class);
-    }
-
-    @Test
-    void missingRecordCountsAsSuccessfulResponseAndIsOlderThanVersionedRecord() {
-        ReplicaPlan plan = planner.planFor(KEY);
-        respond(plan.primary(), Optional.empty());
-        respond(plan.replicas().get(0), Optional.of(StoredRecord.live("found", 5)));
-        fail(plan.replicas().get(1));
-
-        assertThat(readService.get(KEY, ConsistencyLevel.QUORUM)).isEqualTo("found");
-    }
-
-    @Test
-    void quorumFailsWithOnlyOneSuccessfulResponse() {
-        ReplicaPlan plan = planner.planFor(KEY);
-        respond(plan.primary(), Optional.of(StoredRecord.live("value", 5)));
-        fail(plan.replicas().get(0));
-        fail(plan.replicas().get(1));
-
-        assertThatThrownBy(() -> readService.get(KEY, ConsistencyLevel.QUORUM))
-                .isInstanceOf(ConsistencyUnavailableException.class);
-    }
-
-    @Test
     void allFailsWhenOneAssignedNodeIsUnavailable() {
         ReplicaPlan plan = planner.planFor(KEY);
-        respond(plan.primary(), Optional.of(StoredRecord.live("value", 5)));
-        respond(plan.replicas().get(0), Optional.of(StoredRecord.live("value", 5)));
-        fail(plan.replicas().get(1));
+        respond(plan.primary(), KEY, Optional.of(StoredRecord.live("value", 5)));
+        respond(plan.replicas().get(0), KEY, Optional.of(StoredRecord.live("value", 5)));
+        fail(plan.replicas().get(1), KEY);
 
         assertThatThrownBy(() -> readService.get(KEY, ConsistencyLevel.ALL))
                 .isInstanceOf(ConsistencyUnavailableException.class);
     }
 
     @Test
-    void oneCanReadFromReplicaWhenPrimaryIsUnavailable() {
+    void quorumFailsWithOnlyOneSuccessfulResponse() {
         ReplicaPlan plan = planner.planFor(KEY);
-        fail(plan.primary());
-        respond(plan.replicas().get(0), Optional.of(StoredRecord.live("replica-value", 3)));
-        fail(plan.replicas().get(1));
+        respond(plan.primary(), KEY, Optional.of(StoredRecord.live("value", 5)));
+        fail(plan.replicas().get(0), KEY);
+        fail(plan.replicas().get(1), KEY);
 
-        assertThat(readService.get(KEY, ConsistencyLevel.ONE)).isEqualTo("replica-value");
+        assertThatThrownBy(() -> readService.get(KEY, ConsistencyLevel.QUORUM))
+                .isInstanceOf(ConsistencyUnavailableException.class);
+    }
+
+    @Test
+    void failedBestEffortRepairDoesNotInvalidateSuccessfulQuorumRead() {
+        ReplicaPlan plan = planner.planFor(KEY);
+        ClusterNode staleRemote = remoteNode(plan);
+        StoredRecord newest = StoredRecord.live("new", 5);
+        for (ClusterNode node : placement(plan)) {
+            StoredRecord record = node.equals(staleRemote)
+                    ? StoredRecord.live("old", 4)
+                    : newest;
+            respond(node, KEY, Optional.of(record));
+        }
+        doThrow(new NodeCommunicationException(staleRemote.id(), "repair record"))
+                .when(nodeClient)
+                .putReplica(staleRemote, KEY, newest);
+
+        assertThat(readService.get(KEY, ConsistencyLevel.QUORUM)).isEqualTo("new");
     }
 
     @Test
     void contradictoryContentsAtHighestVersionFailClearly() {
         ReplicaPlan plan = planner.planFor(KEY);
-        respond(plan.primary(), Optional.of(StoredRecord.live("first", 5)));
-        respond(plan.replicas().get(0), Optional.of(StoredRecord.live("second", 5)));
-        respond(plan.replicas().get(1), Optional.empty());
+        respond(plan.primary(), KEY, Optional.of(StoredRecord.live("first", 5)));
+        respond(plan.replicas().get(0), KEY, Optional.of(StoredRecord.live("second", 5)));
+        respond(plan.replicas().get(1), KEY, Optional.empty());
 
         assertThatThrownBy(() -> readService.get(KEY, ConsistencyLevel.QUORUM))
                 .isInstanceOf(RecordConflictException.class);
     }
 
-    private void respond(ClusterNode node, Optional<StoredRecord> response) {
-        if (node.id().equals(membership.localNode().id())) {
-            when(localService.getRecord(KEY)).thenReturn(response);
+    @Test
+    void recoveryQueriesEvenUnhealthyAssignedNodesAndRepairsMissingCopy() {
+        ReplicaPlan plan = planner.planFor(KEY);
+        ClusterNode missingRemote = remoteNode(plan);
+        StoredRecord newest = StoredRecord.live("recovered", 6);
+        markUnhealthy(missingRemote);
+        for (ClusterNode node : placement(plan)) {
+            respond(node, KEY, node.equals(missingRemote) ? Optional.empty() : Optional.of(newest));
+        }
+
+        RecoveryResult result = readService.recover(KEY);
+
+        assertThat(result.successfulResponses()).isEqualTo(3);
+        assertThat(result.requiredResponses()).isEqualTo(2);
+        assertThat(result.authoritativeVersion()).isEqualTo(6);
+        assertThat(result.repairs()).isEqualTo(new RepairSummary(1, 1, 0));
+        verify(nodeClient).getRecord(missingRemote, KEY);
+        verify(nodeClient).putReplica(missingRemote, KEY, newest);
+        verify(nodeClient, never()).putPrimary(any(), anyString(), anyString(), any());
+        verify(nodeClient, never()).deletePrimary(any(), anyString(), any());
+    }
+
+    private void respond(ClusterNode node, String key, Optional<StoredRecord> response) {
+        if (isLocal(node)) {
+            when(localService.getRecord(key)).thenReturn(response);
         } else {
-            when(nodeClient.getRecord(node, KEY)).thenReturn(response);
+            when(nodeClient.getRecord(node, key)).thenReturn(response);
         }
     }
 
-    private void fail(ClusterNode node) {
-        if (node.id().equals(membership.localNode().id())) {
-            when(localService.getRecord(KEY)).thenThrow(new com.shardkv.storage.StorageException(
+    private void fail(ClusterNode node, String key) {
+        if (isLocal(node)) {
+            when(localService.getRecord(key)).thenThrow(new StorageException(
                     "local read failed", new RuntimeException()));
         } else {
-            when(nodeClient.getRecord(node, KEY))
+            when(nodeClient.getRecord(node, key))
                     .thenThrow(new NodeCommunicationException(node.id(), "read stored record"));
         }
+    }
+
+    private void verifyRepair(ClusterNode node, String key, StoredRecord record) {
+        if (isLocal(node)) {
+            verify(localService).applyReplicaRecord(key, record);
+        } else {
+            verify(nodeClient).putReplica(node, key, record);
+        }
+    }
+
+    private void markUnhealthy(ClusterNode node) {
+        healthTracker.recordFailure(node);
+        healthTracker.recordFailure(node);
+        healthTracker.recordFailure(node);
+        assertThat(healthTracker.status(node)).isEqualTo(NodeHealthStatus.UNHEALTHY);
+    }
+
+    private ClusterNode remoteNode(ReplicaPlan plan) {
+        return placement(plan).stream()
+                .filter(node -> !isLocal(node))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private java.util.List<ClusterNode> placement(ReplicaPlan plan) {
+        return java.util.stream.Stream.concat(
+                        java.util.stream.Stream.of(plan.primary()),
+                        plan.replicas().stream())
+                .toList();
+    }
+
+    private boolean isLocal(ClusterNode node) {
+        return node.id().equals(membership.localNode().id());
+    }
+
+    private String keyPrimaryOn(String nodeId) {
+        for (int candidate = 0; candidate < 100_000; candidate++) {
+            String key = "health-aware-key-" + candidate;
+            if (planner.planFor(key).primary().id().equals(nodeId)) {
+                return key;
+            }
+        }
+        throw new AssertionError("Could not find key primary on " + nodeId);
     }
 }

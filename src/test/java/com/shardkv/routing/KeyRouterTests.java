@@ -105,6 +105,27 @@ class KeyRouterTests {
         verify(nodeClient, never()).putReplica(any(), anyString(), any());
     }
 
+    @Test
+    void unavailablePrimaryFailsPutAndDeleteAtEveryConsistencyLevel() {
+        String key = keyOwnedBy("node-2");
+        ClusterNode primary = ring.owner(key);
+
+        for (ConsistencyLevel level : ConsistencyLevel.values()) {
+            NodeCommunicationException putFailure = new NodeCommunicationException(
+                    primary.id(), "coordinate primary write");
+            doThrow(putFailure).when(nodeClient).putPrimary(primary, key, "value", level);
+            assertThatThrownBy(() -> router.put(key, "value", level)).isSameAs(putFailure);
+
+            NodeCommunicationException deleteFailure = new NodeCommunicationException(
+                    primary.id(), "coordinate primary delete");
+            doThrow(deleteFailure).when(nodeClient).deletePrimary(primary, key, level);
+            assertThatThrownBy(() -> router.delete(key, level)).isSameAs(deleteFailure);
+        }
+
+        verify(replicationService, never()).put(anyString(), anyString(), any());
+        verify(replicationService, never()).delete(anyString(), any());
+    }
+
     private String keyOwnedBy(String nodeId) {
         for (int candidate = 0; candidate < 100_000; candidate++) {
             String key = "routing-key-" + candidate;

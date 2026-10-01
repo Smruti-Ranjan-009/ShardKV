@@ -2,6 +2,7 @@ package com.shardkv.api;
 
 import com.shardkv.cluster.ClusterMembership;
 import com.shardkv.cluster.ConsistentHashRing;
+import com.shardkv.health.NodeHealthTracker;
 import com.shardkv.replication.ReplicaPlan;
 import com.shardkv.replication.ReplicaPlanner;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,21 +17,26 @@ public class ClusterController {
     private final ClusterMembership membership;
     private final ConsistentHashRing hashRing;
     private final ReplicaPlanner replicaPlanner;
+    private final NodeHealthTracker healthTracker;
 
     public ClusterController(
             ClusterMembership membership,
             ConsistentHashRing hashRing,
-            ReplicaPlanner replicaPlanner) {
+            ReplicaPlanner replicaPlanner,
+            NodeHealthTracker healthTracker) {
         this.membership = membership;
         this.hashRing = hashRing;
         this.replicaPlanner = replicaPlanner;
+        this.healthTracker = healthTracker;
     }
 
     @GetMapping
     public ClusterResponse cluster() {
         return new ClusterResponse(
                 membership.localNode(),
-                membership.members(),
+                membership.members().stream()
+                        .map(node -> ClusterMemberResponse.from(node, healthTracker.status(node)))
+                        .toList(),
                 hashRing.virtualNodesPerNode());
     }
 
