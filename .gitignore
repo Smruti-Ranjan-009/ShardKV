@@ -38,3 +38,8 @@ Desktop.ini
 *.swp
 *.swo
 *~
+
+# Benchmark runtime and raw output
+benchmark/.runtime/
+benchmark/results/raw/
+benchmark/results/transient/

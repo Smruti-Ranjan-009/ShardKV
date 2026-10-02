@@ -1,0 +1,35 @@
+{
+  "k6Image": "grafana/k6:2.3.0",
+  "basePort": 8081,
+  "datasetSize": 5000,
+  "payloadBytes": 1024,
+  "preloadVus": 40,
+  "warmupSeconds": 10,
+  "durationSeconds": 20,
+  "repetitions": 3,
+  "headlineVus": 50,
+  "concurrencySweep": [10, 25, 50, 100],
+  "concurrencySweepRepetitions": 1,
+  "failureVus": 30,
+  "failureDurationSeconds": 60,
+  "failureStopAfterSeconds": 15,
+  "failureRestartAfterSeconds": 15,
+  "healthyErrorRateLimit": 0.01,
+  "workloads": {
+    "get-heavy": {
+      "get": 90,
+      "put": 10,
+      "delete": 0
+    },
+    "put-heavy": {
+      "get": 30,
+      "put": 70,
+      "delete": 0
+    },
+    "mixed": {
+      "get": 50,
+      "put": 40,
+      "delete": 10
+    }
+  }
+}
