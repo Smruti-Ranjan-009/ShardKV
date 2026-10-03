@@ -44,8 +44,8 @@ export default function () {
     document,
     {
       headers: { 'Content-Type': 'application/json' },
-      timeout: '15s',
-      tags: { operation: 'preload-document' },
+      timeout: '60s',
+      tags: { name: '/documents/{key}', operation: 'preload-document' },
     },
   );
   const success = check(response, { 'document preload returned 200': (r) => r.status === 200 });

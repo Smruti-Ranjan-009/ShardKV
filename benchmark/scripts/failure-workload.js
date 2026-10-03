@@ -21,7 +21,6 @@ const allDuration = new Trend('shardkv_all_duration', true);
 export const options = {
   vus,
   duration,
-  gracefulStop: '10s',
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
 };
 
@@ -48,7 +47,7 @@ export default function () {
     `${baseUrl}/kv/${key}?consistency=${consistency}`,
     {
       timeout: '15s',
-      tags: { operation: 'get', consistency },
+      tags: { name: '/kv/{key}', operation: 'get', consistency },
     },
   );
   const success = check(response, { 'read returned 200': (r) => r.status === 200 });

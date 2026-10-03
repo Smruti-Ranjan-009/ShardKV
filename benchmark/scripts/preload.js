@@ -36,8 +36,8 @@ export default function () {
   const body = JSON.stringify({ value: payload });
   const params = {
     headers: { 'Content-Type': 'application/json' },
-    timeout: '15s',
-    tags: { operation: 'preload' },
+    timeout: '60s',
+    tags: { name: '/kv/{key}', operation: 'preload' },
   };
 
   const responses = http.batch([

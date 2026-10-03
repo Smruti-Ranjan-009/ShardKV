@@ -22,12 +22,16 @@ if ($Mode -in @('kv', 'both')) {
     if ($exitCode -ne 0) {
         throw "KV preload failed with k6 exit code $exitCode."
     }
+    $kvPlacement = Assert-DatasetPlacement -State $state -KeyPrefix 'bench-key' -DatasetSize ([int]$config.datasetSize)
+    Write-Output "Validated KV primary placement over a deterministic sample: $kvPlacement"
 }
 if ($Mode -in @('documents', 'both')) {
     $exitCode = Invoke-K6Container -Image $config.k6Image -Script 'preload-documents.js' -Environment $environment
     if ($exitCode -ne 0) {
         throw "Document preload failed with k6 exit code $exitCode."
     }
+    $documentPlacement = Assert-DatasetPlacement -State $state -KeyPrefix 'bench-doc' -DatasetSize ([int]$config.datasetSize)
+    Write-Output "Validated document primary placement over a deterministic sample: $documentPlacement"
 }
 
 Wait-ClusterHealthy -State $state -TimeoutSeconds 60

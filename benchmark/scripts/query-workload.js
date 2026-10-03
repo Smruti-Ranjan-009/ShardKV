@@ -15,7 +15,6 @@ const operationDuration = new Trend('shardkv_operation_duration', true);
 export const options = {
   vus,
   duration,
-  gracefulStop: '10s',
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
   thresholds: {
     shardkv_errors: [`rate<${__ENV.ERROR_RATE_LIMIT || '0.01'}`],
@@ -32,7 +31,7 @@ export default function () {
     {
       headers: { 'Content-Type': 'application/json' },
       timeout: '30s',
-      tags: { operation: 'query', query_type: queryType },
+      tags: { name: '/query', operation: 'query', query_type: queryType },
     },
   );
   const success = check(response, {

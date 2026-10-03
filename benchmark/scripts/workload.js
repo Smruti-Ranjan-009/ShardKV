@@ -29,7 +29,6 @@ if (!ratios[workload]) {
 export const options = {
   vus,
   duration,
-  gracefulStop: '5s',
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
   thresholds: {
     shardkv_errors: [`rate<${__ENV.ERROR_RATE_LIMIT || '0.01'}`],
@@ -43,7 +42,7 @@ function key(prefix, index) {
 function request(operation, baseUrl, index) {
   const params = {
     timeout: '15s',
-    tags: { operation, consistency },
+    tags: { name: '/kv/{key}', operation, consistency },
   };
 
   if (operation === 'get') {

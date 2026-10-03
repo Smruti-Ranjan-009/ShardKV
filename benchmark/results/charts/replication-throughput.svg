@@ -1,0 +1,26 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450">
+<rect width="100%" height="100%" fill="white"/>
+<text x="400" y="28" text-anchor="middle" font-family="sans-serif" font-size="20">PUT-heavy throughput vs replication factor (ALL)</text>
+<line x1="85" y1="55" x2="85" y2="375" stroke="#333"/>
+<line x1="85" y1="375" x2="770" y2="375" stroke="#333"/>
+<text x="18" y="215" transform="rotate(-90 18 215)" text-anchor="middle" font-family="sans-serif" font-size="13">operations / second</text>
+<line x1="85" y1="375" x2="770" y2="375" stroke="#ddd"/>
+<text x="77" y="379" text-anchor="end" font-family="sans-serif" font-size="11">0</text>
+<line x1="85" y1="295" x2="770" y2="295" stroke="#ddd"/>
+<text x="77" y="299" text-anchor="end" font-family="sans-serif" font-size="11">500.05</text>
+<line x1="85" y1="215" x2="770" y2="215" stroke="#ddd"/>
+<text x="77" y="219" text-anchor="end" font-family="sans-serif" font-size="11">1000.09</text>
+<line x1="85" y1="135" x2="770" y2="135" stroke="#ddd"/>
+<text x="77" y="139" text-anchor="end" font-family="sans-serif" font-size="11">1500.14</text>
+<line x1="85" y1="55" x2="770" y2="55" stroke="#ddd"/>
+<text x="77" y="59" text-anchor="end" font-family="sans-serif" font-size="11">2000.19</text>
+<rect x="154.166666666667" y="84.0909090909091" width="90" height="290.909090909091" fill="#3274d9"/>
+<text x="199.166666666667" y="78.0909090909091" text-anchor="middle" font-family="sans-serif" font-size="11">1818.35</text>
+<text x="199.166666666667" y="397" text-anchor="middle" font-family="sans-serif" font-size="12">RF=1</text>
+<rect x="382.5" y="160.859807967763" width="90" height="214.140192032237" fill="#3274d9"/>
+<text x="427.5" y="154.859807967763" text-anchor="middle" font-family="sans-serif" font-size="11">1338.5</text>
+<text x="427.5" y="397" text-anchor="middle" font-family="sans-serif" font-size="12">RF=2</text>
+<rect x="610.833333333333" y="246.147918817509" width="90" height="128.852081182491" fill="#3274d9"/>
+<text x="655.833333333333" y="240.147918817509" text-anchor="middle" font-family="sans-serif" font-size="11">805.4</text>
+<text x="655.833333333333" y="397" text-anchor="middle" font-family="sans-serif" font-size="12">RF=3</text>
+</svg>

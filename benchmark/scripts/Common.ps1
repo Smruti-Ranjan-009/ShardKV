@@ -44,7 +44,8 @@ function Test-ClusterHealthy {
                 return $false
             }
             $cluster = Invoke-RestMethod -Uri "http://localhost:$($node.port)/cluster" -TimeoutSec 3
-            if (($cluster.members | Where-Object { $_.status -ne 'HEALTHY' }).Count -gt 0) {
+            $unhealthyMembers = @($cluster.members | Where-Object { $_.status -ne 'HEALTHY' })
+            if ($unhealthyMembers.Count -gt 0) {
                 return $false
             }
         } catch {
@@ -67,6 +68,37 @@ function Wait-ClusterHealthy {
         Start-Sleep -Seconds 1
     } while ((Get-Date) -lt $deadline)
     throw "Cluster did not become healthy within $TimeoutSeconds seconds."
+}
+
+function Assert-DatasetPlacement {
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)][string]$KeyPrefix,
+        [Parameter(Mandatory)][int]$DatasetSize
+    )
+    $sampleSize = [Math]::Min($DatasetSize, 300)
+    $counts = @{}
+    for ($index = 0; $index -lt $sampleSize; $index++) {
+        $key = '{0}-{1:d7}' -f $KeyPrefix, $index
+        $ownerResponse = Invoke-RestMethod `
+            -Uri "http://localhost:$($State.nodes[0].port)/cluster/owner/$key" `
+            -TimeoutSec 5
+        $ownerId = [string]$ownerResponse.owner.id
+        if (-not $counts.ContainsKey($ownerId)) { $counts[$ownerId] = 0 }
+        $counts[$ownerId]++
+    }
+    if ($counts.Count -ne [int]$State.nodeCount) {
+        throw "Dataset placement validation reached $($counts.Count) of $($State.nodeCount) configured primary owners."
+    }
+
+    $sampleKey = '{0}-{1:d7}' -f $KeyPrefix, 0
+    $placement = Invoke-RestMethod `
+        -Uri "http://localhost:$($State.nodes[0].port)/cluster/replicas/$sampleKey" `
+        -TimeoutSec 5
+    if ([int]$placement.replicationFactor -ne [int]$State.replicationFactor) {
+        throw "Cluster reports RF=$($placement.replicationFactor), expected RF=$($State.replicationFactor)."
+    }
+    return ($counts.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ', '
 }
 
 function Assert-BenchmarkPortsFree {
@@ -105,8 +137,9 @@ function Invoke-K6Container {
         $arguments += @('-e', "$($entry.Key)=$($entry.Value)")
     }
     $arguments += @($Image, 'run', "/benchmark/scripts/$Script")
-    & docker @arguments
-    return $LASTEXITCODE
+    & docker @arguments | Out-Host
+    $exitCode = $LASTEXITCODE
+    return $exitCode
 }
 
 function Get-ContainerBaseUrls {
@@ -140,8 +173,14 @@ function Stop-TrackedNode {
     if ($process.Name -notmatch '^java(\.exe)?$' -or $process.CommandLine -notlike '*shardkv-0.0.1-SNAPSHOT.jar*') {
         throw "Refusing to stop PID $($Node.pid); it is not the tracked ShardKV JVM."
     }
-    Stop-Process -Id $Node.pid
-    Wait-Process -Id $Node.pid -Timeout 20 -ErrorAction SilentlyContinue
+    Stop-Process -Id $Node.pid -Force
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-Process -Id $Node.pid -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 200
+    }
+    if (Get-Process -Id $Node.pid -ErrorAction SilentlyContinue) {
+        throw "Tracked ShardKV JVM PID $($Node.pid) did not stop within 20 seconds."
+    }
 }
 
 function Start-TrackedNode {
@@ -163,6 +202,9 @@ function Start-TrackedNode {
     $env:SHARDKV_HEARTBEAT_INTERVAL = $State.heartbeatInterval
     $env:SHARDKV_FAILURE_THRESHOLD = [string]$State.failureThreshold
     $env:SHARDKV_RECOVERY_THRESHOLD = [string]$State.recoveryThreshold
+    $env:SHARDKV_QUERY_MAX_RESULTS = [string]$State.queryMaxResults
+    $env:DEBUG = 'false'
+    $env:LOGGING_LEVEL_ROOT = 'INFO'
 
     $stdout = Join-Path $Node.logDir "$($Node.id)-$LogSuffix.out.log"
     $stderr = Join-Path $Node.logDir "$($Node.id)-$LogSuffix.err.log"

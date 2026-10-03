@@ -1,0 +1,128 @@
+﻿{
+    "metadata":  {
+                     "experiment":  "failure-under-load",
+                     "topology":  "3-node",
+                     "nodeCount":  3,
+                     "replicationFactor":  3,
+                     "consistency":  "QUORUM+ALL",
+                     "workload":  "read-failure-injection",
+                     "payloadBytes":  1024,
+                     "datasetSize":  5000,
+                     "vus":  30,
+                     "warmupSeconds":  10,
+                     "durationSeconds":  60,
+                     "runNumber":  1,
+                     "k6Image":  "grafana/k6:2.3.0"
+                 },
+    "metrics":  {
+                    "operations":  98600,
+                    "throughputOpsPerSecond":  1643.3333333333333,
+                    "latencyMs":  {
+                                      "p50":  5.226062499999999,
+                                      "p95":  12.700418849999993,
+                                      "p99":  23.054927129999992,
+                                      "average":  6.089019339634872,
+                                      "maximum":  153.870768
+                                  },
+                    "errorRate":  0.03818458417849899,
+                    "httpRequests":  98600
+                },
+    "consistencyBreakdown":  {
+                                 "quorum":  {
+                                                "operations":  78888,
+                                                "throughputOpsPerSecond":  1314.8,
+                                                "errorRate":  0.001026772132643748,
+                                                "latencyMs":  {
+                                                                  "p50":  5.0667255,
+                                                                  "p95":  12.115270349999994,
+                                                                  "p99":  19.404337190000007,
+                                                                  "average":  5.804460643114271,
+                                                                  "maximum":  153.870768
+                                                              }
+                                            },
+                                 "all":  {
+                                             "operations":  19712,
+                                             "throughputOpsPerSecond":  328.53333333333336,
+                                             "errorRate":  0.18689123376623376,
+                                             "latencyMs":  {
+                                                               "p50":  5.8367805,
+                                                               "p95":  16.343859750000004,
+                                                               "p99":  30.746143829999987,
+                                                               "average":  7.227831558137166,
+                                                               "maximum":  129.366225
+                                                           }
+                                         }
+                             },
+    "failureInjection":  {
+                             "failedNode":  "node-3",
+                             "benchmarkStartedAt":  "2026-10-02T19:33:15.6736950Z",
+                             "nodeStoppedAt":  "2026-10-02T19:33:30.6837497Z",
+                             "unhealthyObservedAt":  "2026-10-02T19:33:33.8159759Z",
+                             "nodeRestartedAt":  "2026-10-02T19:33:48.8190496Z",
+                             "healthyObservedAt":  "2026-10-02T19:34:03.6851384Z",
+                             "benchmarkFinishedAt":  "2026-10-02T19:34:31.3062849Z",
+                             "actualNodeDownSeconds":  18.135,
+                             "unhealthyDetectionSeconds":  3.132,
+                             "healthyRecoverySeconds":  14.866
+                         },
+    "prometheusCorrelation":  {
+                                  "before":  {
+                                                 "heartbeatFailures":  3,
+                                                 "healthTransitions":  6,
+                                                 "readFailovers":  null
+                                             },
+                                  "after":  {
+                                                "heartbeatFailures":  63,
+                                                "healthTransitions":  12,
+                                                "readFailovers":  4773
+                                            }
+                              },
+    "validation":  {
+                       "valid":  true,
+                       "k6ExitCode":  0,
+                       "quorumAvailable":  true,
+                       "allFailuresObserved":  true,
+                       "healthTransitionsObserved":  true,
+                       "clusterHealthyAfter":  true,
+                       "resourceSamplesBefore":  [
+                                                     {
+                                                         "node":  "node-1",
+                                                         "pid":  32928,
+                                                         "cpuSeconds":  109.0625,
+                                                         "workingSetBytes":  256729088
+                                                     },
+                                                     {
+                                                         "node":  "node-2",
+                                                         "pid":  18388,
+                                                         "cpuSeconds":  100.796875,
+                                                         "workingSetBytes":  257806336
+                                                     },
+                                                     {
+                                                         "node":  "node-3",
+                                                         "pid":  10952,
+                                                         "cpuSeconds":  89.453125,
+                                                         "workingSetBytes":  294801408
+                                                     }
+                                                 ],
+                       "resourceSamplesAfter":  [
+                                                    {
+                                                        "node":  "node-1",
+                                                        "pid":  32928,
+                                                        "cpuSeconds":  189.109375,
+                                                        "workingSetBytes":  325312512
+                                                    },
+                                                    {
+                                                        "node":  "node-2",
+                                                        "pid":  18388,
+                                                        "cpuSeconds":  177.078125,
+                                                        "workingSetBytes":  293216256
+                                                    },
+                                                    {
+                                                        "node":  "node-3",
+                                                        "pid":  28004,
+                                                        "cpuSeconds":  53.0625,
+                                                        "workingSetBytes":  246276096
+                                                    }
+                                                ]
+                   }
+}

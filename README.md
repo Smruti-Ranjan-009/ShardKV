@@ -1,10 +1,10 @@
 # ShardKV
 
-ShardKV is an incremental Java project for exploring the foundations of a distributed key-value store. Phase 7 adds production-style application instrumentation and a reproducible local Prometheus/Grafana stack to the existing durable quorum-based cluster.
+ShardKV is an incremental Java project for exploring the foundations of a distributed key-value store. Phase 8 adds a reproducible k6 benchmark harness and machine-measured results to the durable, observable quorum-based cluster.
 
 ShardKV remains a development system. It does not automatically promote write primaries and does not claim linearizability, consensus, or complete partition tolerance.
 
-## Current status: Phase 7
+## Current status: Phase 8
 
 Implemented:
 
@@ -26,8 +26,10 @@ Implemented:
 - Spring Boot Actuator health and Prometheus endpoints
 - low-cardinality Micrometer metrics for storage, consistency, replication, health, repair, and queries
 - provisioned Prometheus scraping and the `ShardKV Cluster Overview` Grafana dashboard
+- a pinned Docker-based k6 harness for sharding, replication, consistency, query, concurrency, and failure experiments
+- machine-readable per-run results, median summaries, environment metadata, and generated charts
 
-Not implemented: automatic write-primary failover, dynamic membership, gossip, hinted handoff, full anti-entropy, consensus, automatic migration, SQL, range/full-text queries, distributed index-query failover, or load benchmarking.
+Not implemented: automatic write-primary failover, dynamic membership, gossip, hinted handoff, full anti-entropy, consensus, automatic migration, SQL, range/full-text queries, distributed index-query failover, application containers, or CI/CD.
 
 ## Architecture
 
@@ -67,6 +69,10 @@ Not implemented: automatic write-primary failover, dynamic membership, gossip, h
        ShardKV Node 1 ----\
        ShardKV Node 2 -----+--> Prometheus --> Grafana
        ShardKV Node 3 ----/
+
+       k6 in Docker ----> local ShardKV JVMs
+              |
+       JSON/CSV summaries + SVG charts
 ```
 
 Every node builds the same immutable hash ring from identical static membership. SHA-256 hashes UTF-8 ring identifiers, and replica placement walks clockwise while skipping duplicate physical nodes.
@@ -246,6 +252,58 @@ For read repair, stop one replica, update a key with `QUORUM`, restart the stale
 
 This compose setup is intended only for local development and demonstrations. It has no TLS, hardened credentials, retention tuning, access control, or production alerting.
 
+## Benchmarking
+
+Phase 8 uses k6 from the pinned `grafana/k6:2.3.0` Docker image; k6 does not need to be installed globally. ShardKV itself still runs as local JVM processes. The harness creates isolated RocksDB directories, verifies health and deterministic owner distribution, records only its own JVM PIDs, and cleans up only those tracked processes.
+
+The measured environment was an 11th Gen Intel Core i5-11400H laptop with 6 physical/12 logical cores, 15.73 GiB RAM, Windows 11 build 26200, and Temurin Java 17.0.20.1. JVMs used Java's default ergonomics with no explicit heap flags. Each scenario used 5,000 deterministic keys, a 1 KiB payload, 10 seconds of warm-up, 20 seconds of measurement, and three repetitions unless marked as a concurrency sweep. Results below are medians of valid runs.
+
+Horizontal RF=1 results at 50 VUs:
+
+| Nodes | Workload | Ops/s | P50 ms | P95 ms | P99 ms | Errors |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | GET-heavy | 4904.35 | 5.43 | 15.37 | 25.06 | 0.034% |
+| 3 | GET-heavy | 3008.90 | 13.15 | 25.27 | 34.55 | 0.018% |
+| 5 | GET-heavy | 4136.90 | 8.82 | 16.07 | 21.05 | 0.023% |
+| 1 | PUT-heavy | 2721.25 | 7.42 | 16.42 | 21.43 | 0.028% |
+| 3 | PUT-heavy | 2317.60 | 18.23 | 31.05 | 39.79 | 0.011% |
+| 5 | PUT-heavy | 3126.25 | 9.75 | 17.82 | 22.28 | 0.046% |
+
+The local multi-JVM test did not show consistent horizontal scaling. Compared with one node, read-heavy throughput was 38.65% lower at three nodes and 15.65% lower at five nodes. Five-node PUT-heavy throughput was 14.88% higher than one node, but three nodes were slower. This is a shared-host result, not evidence for or against multi-machine scale-out.
+
+Synchronous replication cost on three nodes at 10 VUs and `ALL`:
+
+| RF | Ops/s | P50 ms | P95 ms | P99 ms | Errors |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1818.35 | 3.27 | 5.73 | 6.82 | 0.015% |
+| 2 | 1338.50 | 7.77 | 10.56 | 12.38 | 0.000% |
+| 3 | 805.40 | 9.40 | 13.57 | 15.60 | 0.033% |
+
+RF=3 delivered 55.71% less throughput than RF=1 under this PUT-heavy `ALL` workload, reflecting the cost of three synchronous durable copies on one machine.
+
+Consistency comparison on three nodes, RF=3, at 10 VUs:
+
+| Level | Ops/s | P50 ms | P95 ms | P99 ms | Errors |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `ONE` | 1073.05 | 11.19 | 14.72 | 17.41 | 0.000% |
+| `QUORUM` | 992.05 | 11.17 | 14.54 | 16.78 | 0.000% |
+| `ALL` | 895.05 | 10.43 | 14.42 | 17.20 | 0.022% |
+
+Throughput decreased by 16.59% from `ONE` to `ALL`, but healthy-cluster P95 values were close and not monotonically ordered. ShardKV still attempts broad replication and currently waits for attempted replica calls before evaluating the acknowledgement threshold, so early-return latency optimization remains deferred.
+
+Distributed query results over 5,000 RF=3 documents at 5 VUs:
+
+| Query | Queries/s | P50 ms | P95 ms | P99 ms | Errors |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `city = Bengaluru` | 15.50 | 296.37 | 447.84 | 520.22 | 0.000% |
+| `city = Bengaluru AND role = SDE` | 29.00 | 165.67 | 203.65 | 235.87 | 0.000% |
+
+The single-filter query returns roughly twice as many documents as the AND query, so these figures include materially different response sizes. They are not directly comparable to point GET latency.
+
+During the 60-second RF=3 failure run, node-3 was actually down for 18.135 seconds. Peers observed it as `UNHEALTHY` after 3.132 seconds and the full cluster returned to `HEALTHY` 14.866 seconds after restart. QUORUM reads had a 0.103% error rate, while ALL reads had an 18.689% full-run error rate; Prometheus recorded 4,773 read failovers by the end of the run. This demonstrates read availability under the implemented model, not write-primary failover.
+
+The full reproducible methodology, commands, every run, complete tables, failure metadata, and charts are under [`benchmark/`](benchmark/README.md), with the generated report at [`benchmark/results/summary.md`](benchmark/results/summary.md). These measurements describe one local Windows development machine using loopback networking and Docker Desktop; they are not production capacity or SLO claims.
+
 ## Configuration
 
 | Environment variable | Default | Purpose |
@@ -321,7 +379,7 @@ Example cluster health inspection:
 Example write and read:
 
 ```powershell
-$body = @{ value = "phase-7-value" } | ConvertTo-Json
+$body = @{ value = "phase-8-value" } | ConvertTo-Json
 
 Invoke-RestMethod `
     -Method Put `
@@ -405,6 +463,8 @@ java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 - Prometheus and Grafana are local development infrastructure and are not production-secured.
 - No SLO alerts, long-term metric retention, tracing, or centralized logging are configured.
 - Dashboard observations are not load-test or benchmark claims.
+- Phase 8 measurements come from one Windows host with loopback networking and shared CPU, memory, disk, JVM, and Docker resources.
+- Local 1/3/5-JVM results are not equivalent to 1/3/5 physical machines, and no production capacity or latency SLO is claimed.
 - The system does not claim linearizability or complete partition tolerance.
 
 ## Roadmap
@@ -416,5 +476,5 @@ java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 - Phase 5: Failure detection + read failover + read repair + scoped recovery - complete
 - Phase 6: Secondary indexes + distributed queries - complete
 - Phase 7: Actuator + Micrometer + Prometheus + Grafana observability - complete
-- Phase 8: Scale/load testing
+- Phase 8: Reproducible k6 scale/load testing - complete
 - Phase 9: Docker + CI/CD + production polish

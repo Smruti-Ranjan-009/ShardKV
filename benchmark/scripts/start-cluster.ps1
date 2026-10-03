@@ -63,6 +63,7 @@ $state = [pscustomobject]@{
     heartbeatInterval = '1s'
     failureThreshold = 3
     recoveryThreshold = 2
+    queryMaxResults = 10000
     nodes = $nodes
 }
 

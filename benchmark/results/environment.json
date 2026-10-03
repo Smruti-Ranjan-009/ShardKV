@@ -1,0 +1,64 @@
+﻿{
+    "capturedAt":  "2026-10-02T19:28:36.1583642Z",
+    "machine":  {
+                    "cpu":  "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+                    "physicalCores":  6,
+                    "logicalCores":  12,
+                    "ramBytes":  16889200640
+                },
+    "operatingSystem":  {
+                            "caption":  "Microsoft Windows 11 Home Single Language",
+                            "version":  "10.0.26200",
+                            "buildNumber":  "26200",
+                            "architecture":  "64-bit"
+                        },
+    "javaVersion":  "openjdk version \"17.0.20.1\" 2026-08-18\nOpenJDK Runtime Environment Temurin-17.0.20.1+1 (build 17.0.20.1+1)\nOpenJDK 64-Bit Server VM Temurin-17.0.20.1+1 (build 17.0.20.1+1, mixed mode, sharing)",
+    "jvmArguments":  "No explicit heap flags; default Java 17 ergonomics",
+    "dockerVersion":  "29.8.1",
+    "k6Image":  "grafana/k6:2.3.0",
+    "k6Version":  "k6 v2.3.0 (commit/e088784614, go1.27.1, linux/amd64)",
+    "repositoryCommit":  "a25d34ac048103c9e25030383b690ca892a97e60",
+    "repositoryDirtyDuringCapture":  true,
+    "benchmarkConfig":  {
+                            "k6Image":  "grafana/k6:2.3.0",
+                            "basePort":  8081,
+                            "datasetSize":  5000,
+                            "payloadBytes":  1024,
+                            "preloadVus":  10,
+                            "warmupSeconds":  10,
+                            "durationSeconds":  20,
+                            "repetitions":  3,
+                            "headlineVus":  50,
+                            "writeComparisonVus":  10,
+                            "queryVus":  5,
+                            "concurrencySweep":  [
+                                                     10,
+                                                     25,
+                                                     50,
+                                                     100
+                                                 ],
+                            "concurrencySweepRepetitions":  1,
+                            "failureVus":  30,
+                            "failureDurationSeconds":  60,
+                            "failureStopAfterSeconds":  15,
+                            "failureRestartAfterSeconds":  15,
+                            "healthyErrorRateLimit":  0.01,
+                            "workloads":  {
+                                              "get-heavy":  {
+                                                                "get":  90,
+                                                                "put":  10,
+                                                                "delete":  0
+                                                            },
+                                              "put-heavy":  {
+                                                                "get":  30,
+                                                                "put":  70,
+                                                                "delete":  0
+                                                            },
+                                              "mixed":  {
+                                                            "get":  50,
+                                                            "put":  40,
+                                                            "delete":  10
+                                                        }
+                                          }
+                        }
+}
