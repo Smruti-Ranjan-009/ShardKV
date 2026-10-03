@@ -1,78 +1,85 @@
 # ShardKV
 
-ShardKV is an incremental Java project for exploring the foundations of a distributed key-value store. Phase 8 adds a reproducible k6 benchmark harness and machine-measured results to the durable, observable quorum-based cluster.
+ShardKV is a Java 17 distributed key-value and document store built to make storage-engine, sharding, replication, quorum, repair, indexing, observability, and performance tradeoffs concrete. The final project includes a reproducible three-node Docker environment and correctness-focused GitHub Actions CI in addition to the local-JVM development workflow.
 
-ShardKV remains a development system. It does not automatically promote write primaries and does not claim linearizability, consensus, or complete partition tolerance.
+ShardKV remains an educational development system. It does not automatically promote write primaries and does not claim linearizability, consensus, or complete partition tolerance.
 
-## Current status: Phase 8
+## Why ShardKV
 
-Implemented:
+A durable single-node map is straightforward; coordinating ownership, versions, replicas, failures, queries, and operations across nodes is not. ShardKV keeps those concerns explicit and incrementally testable instead of hiding them behind a production database. The project is intended to demonstrate engineering decisions and their limitations, not to replace a production data platform.
 
-- Java 17, Spring Boot 3, and the Maven Wrapper
-- RocksDB storage with native WAL enabled and `sync=true`
-- static membership, SHA-256 consistent hashing, and virtual nodes
-- deterministic primary and replica placement
-- versioned records and durable tombstones
-- `ONE`, `QUORUM`, and `ALL` consistency
-- heartbeat-based `HEALTHY`, `SUSPECT`, and `UNHEALTHY` tracking
-- health-aware replica reads and read failover
-- highest-version read reconciliation and best-effort read repair
-- bounded per-key recovery through an internal endpoint
-- durable repair using the existing replica version rules
-- structured scalar documents alongside the backward-compatible `/kv` API
-- configured durable secondary indexes with atomic record/index writes
-- equality and AND queries with parallel all-node fan-out
-- primary-shard filtering, defensive deduplication, and bounded query results
-- Spring Boot Actuator health and Prometheus endpoints
-- low-cardinality Micrometer metrics for storage, consistency, replication, health, repair, and queries
-- provisioned Prometheus scraping and the `ShardKV Cluster Overview` Grafana dashboard
-- a pinned Docker-based k6 harness for sharding, replication, consistency, query, concurrency, and failure experiments
-- machine-readable per-run results, median summaries, environment metadata, and generated charts
+## Core features
 
-Not implemented: automatic write-primary failover, dynamic membership, gossip, hinted handoff, full anti-entropy, consensus, automatic migration, SQL, range/full-text queries, distributed index-query failover, application containers, or CI/CD.
+### Distributed systems
+
+- Static membership with SHA-256 consistent hashing and configurable virtual nodes
+- Deterministic primary plus ordered replica placement
+- Routed public operations, synchronous replication, and bounded peer communication
+
+### Storage
+
+- RocksDB persistence with its native WAL and synchronous writes
+- Versioned records, durable tombstones, and atomic document/index `WriteBatch` updates
+- One isolated RocksDB directory or Docker volume per node
+
+### Consistency and reliability
+
+- `ONE`, `QUORUM`, and `ALL` reads and mutations
+- Heartbeat-based `HEALTHY`, `SUSPECT`, and `UNHEALTHY` tracking
+- Replica read failover, highest-version reconciliation, read repair, and single-key recovery
+
+### Querying
+
+- Backward-compatible string KV API plus structured scalar documents
+- Configured durable equality indexes and AND-filter query intersection
+- Bounded parallel fan-out with complete-or-fail distributed query semantics
+
+### Observability
+
+- Spring Boot Actuator, low-cardinality Micrometer metrics, and Prometheus histograms
+- Provisioned Prometheus datasource and `ShardKV Cluster Overview` Grafana dashboard
+
+### Performance engineering
+
+- Reproducible pinned-k6 workloads, topology automation, raw-run validation, median summaries, and charts
+- Measured sharding, replication, consistency, query, concurrency, and node-failure behavior
+
+### Packaging and automation
+
+- Multi-stage, non-root Java 17 container image
+- Three-node Compose stack with isolated persistent volumes, Prometheus, and Grafana
+- GitHub Actions tests, packaging, image build, Compose startup, smoke verification, failure logs, and cleanup
+
+Not implemented: automatic write-primary failover, dynamic membership, gossip, hinted handoff, full anti-entropy, consensus, automatic migration, SQL, range/full-text queries, distributed index-query failover, Kubernetes, or cloud deployment.
 
 ## Architecture
 
-```text
-                           Client
-                             |
-                      any ShardKV node
-                             |
-                         KeyRouter
-                 writes /               \ reads
-                       /                 \
-          deterministic primary      ReplicaPlanner
-                    |                 /     |     \
-          versioned durable write  primary replica replica
-                    |                 \     |     /
-            synchronous replicas     health-aware reads
-                                      highest version
-                                            |
-                                  best-effort read repair
+```mermaid
+flowchart TD
+    Client --> Any["Any ShardKV node"]
+    Any --> Router["KeyRouter + ConsistentHashRing"]
+    Router --> Primary["Deterministic primary"]
+    Primary --> PrimaryDb["Primary RocksDB<br/>WAL + sync"]
+    Primary --> Replica1["Replica node"]
+    Primary --> Replica2["Replica node"]
+    Replica1 --> ReplicaDb1["Replica RocksDB"]
+    Replica2 --> ReplicaDb2["Replica RocksDB"]
+    Any --> Reads["Health-aware quorum reads"]
+    Reads --> Reconcile["Highest-version reconciliation"]
+    Reconcile --> Repair["Best-effort read repair"]
+    Any --> Query["Parallel distributed query"]
+    Query --> Indexes["Primary-owned local index results"]
+```
 
-     PUT /documents/{key} --> existing versioned mutation pipeline
-                                  |
-                         RocksDB WriteBatch
-                         record + local indexes
-
-     POST /query --> parallel fan-out to every physical node
-                         |       |       |
-                    local primary-owned index matches only
-                         \       |       /
-                       merge + deduplicate + limit
-
-       HeartbeatMonitor ----> configured peer /internal/health
-              |
-       NodeHealthTracker
-       HEALTHY / SUSPECT / UNHEALTHY
-
-       ShardKV Node 1 ----\
-       ShardKV Node 2 -----+--> Prometheus --> Grafana
-       ShardKV Node 3 ----/
-
-       k6 in Docker ----> local ShardKV JVMs
-              |
-       JSON/CSV summaries + SVG charts
+```mermaid
+flowchart LR
+    Node1["ShardKV node-1"] --> Prometheus
+    Node2["ShardKV node-2"] --> Prometheus
+    Node3["ShardKV node-3"] --> Prometheus
+    Prometheus --> Grafana
+    K6["k6 benchmark client"] --> Node1
+    K6 --> Node2
+    K6 --> Node3
 ```
 
 Every node builds the same immutable hash ring from identical static membership. SHA-256 hashes UTF-8 ring identifiers, and replica placement walks clockwise while skipping duplicate physical nodes.
@@ -80,6 +87,18 @@ Every node builds the same immutable hash ring from identical static membership.
 The deterministic primary remains the only mutation coordinator and version generator. Health state never changes ownership or promotes a replica.
 
 Instrumentation is observational: it does not change routing, acknowledgement, repair, failure-detection, or durability decisions. Spring supplies the normal HTTP server metrics; `ShardKvMetrics` centralizes domain metrics so application code does not scatter raw registry access.
+
+## Architecture decisions
+
+- **Consistent hashing and virtual nodes:** every node independently builds the same stable SHA-256 ring; virtual nodes improve distribution without claiming perfect balance.
+- **Deterministic primary:** one configured owner coordinates versions and mutations, preventing ad-hoc replica promotion and split-brain writes.
+- **Synchronous replication:** durable replica acknowledgements are easy to reason about, while the measured latency and throughput cost remains visible.
+- **Quorum consistency:** acknowledgement counts derive from replication factor; reads reconcile the highest version but the system does not claim consensus or linearizability.
+- **Versions and tombstones:** primary-generated versions order mutations, and durable tombstones prevent stale replicas from resurrecting deleted values.
+- **Heartbeat health:** timeout-based peer observations optimize read ordering but never override real request results or change ownership.
+- **Read repair:** successful reads can update stale or missing responding replicas through the same version-safe durable apply path.
+- **RocksDB WAL:** acknowledged local writes use RocksDB's native WAL with `sync=true`; ShardKV does not add a redundant application WAL.
+- **Secondary indexes:** explicit index definitions and one atomic RocksDB batch keep each local record and its index entries consistent.
 
 ## Documents and secondary indexes
 
@@ -215,9 +234,9 @@ Custom metrics use only bounded operation, outcome, consistency, peer, and healt
 
 The health gauge is numeric and Grafana-friendly: `HEALTHY=1`, `SUSPECT=0.5`, and `UNHEALTHY=0`. The `node` tag identifies the observing JVM and `peer` identifies the member being observed. Keys, document values, filter values, request bodies, and arbitrary error messages are never metric tags.
 
-### Start Prometheus and Grafana
+### Observability-only stack for host JVMs
 
-First run the three ShardKV JVMs as described below. Then start only the local observability services:
+The preferred all-container workflow is described under **Running locally with Docker Compose**. When developing ShardKV as three host JVMs instead, start those JVMs as described below and then start only Prometheus and Grafana:
 
 ```powershell
 docker compose -f observability\docker-compose.yml up -d
@@ -304,6 +323,56 @@ During the 60-second RF=3 failure run, node-3 was actually down for 18.135 secon
 
 The full reproducible methodology, commands, every run, complete tables, failure metadata, and charts are under [`benchmark/`](benchmark/README.md), with the generated report at [`benchmark/results/summary.md`](benchmark/results/summary.md). These measurements describe one local Windows development machine using loopback networking and Docker Desktop; they are not production capacity or SLO claims.
 
+## Running locally with Docker Compose
+
+Prerequisite: Docker Desktop or another Docker Engine with Compose v2.
+
+Build and start the complete three-node cluster, Prometheus, and Grafana:
+
+```powershell
+docker compose up --build --detach --wait
+```
+
+The application image is built in two stages. The pinned Maven/Temurin Java 17 build stage runs the Maven Wrapper and tests; the pinned Temurin Java 17 JRE stage contains only the executable JAR, runtime libraries, and `curl` for its readiness check. The runtime process uses an unprivileged `shardkv` user.
+
+| Service | Host URL | Container address |
+| --- | --- | --- |
+| node-1 | http://localhost:8081 | `shardkv-node-1:8080` |
+| node-2 | http://localhost:8082 | `shardkv-node-2:8080` |
+| node-3 | http://localhost:8083 | `shardkv-node-3:8080` |
+| Prometheus | http://localhost:9090 | `prometheus:9090` |
+| Grafana | http://localhost:3000 | `grafana:3000` |
+
+Each ShardKV service advertises its Docker DNS name and mounts a different named volume: `node-1-data`, `node-2-data`, or `node-3-data`. Never attach one of these RocksDB volumes to more than one running node.
+
+Run the repeatable container smoke test:
+
+```powershell
+.\scripts\smoke-test.ps1
+```
+
+The test verifies healthy membership, identical ownership, routing through a non-primary, physical RF=3 copies, a QUORUM read, document indexing/query fan-out, all Prometheus targets, and the provisioned Grafana dashboard. Optional persistence and failure/recovery checks are available without adding new application behavior:
+
+```powershell
+.\scripts\smoke-test.ps1 -VerifyPersistence -VerifyFailureRecovery
+```
+
+`-VerifyPersistence` restarts all three application containers without deleting volumes and rechecks the logical value and physical copies. `-VerifyFailureRecovery` stops a key's deterministic primary, verifies its `UNHEALTHY` transition, successful replica `ONE` and `QUORUM` reads, an `ALL` HTTP 503, and recovery after restart.
+
+Stop containers while retaining data:
+
+```powershell
+docker compose down
+```
+
+Deliberately remove containers and all development volumes:
+
+```powershell
+docker compose down --volumes --remove-orphans
+```
+
+The Grafana `admin` / `admin` credentials are local-demo defaults. Set `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` before first startup to override them. This Compose topology is reproducible development infrastructure, not a production deployment.
+
 ## Configuration
 
 | Environment variable | Default | Purpose |
@@ -328,7 +397,7 @@ The full reproducible methodology, commands, every run, complete tables, failure
 
 Thresholds and durations must be positive. Each JVM must use a separate RocksDB directory.
 
-## Run three nodes locally
+## Running without Docker
 
 Open three PowerShell terminals. All nodes must share membership, replication factor, consistency, and failure-detection settings.
 
@@ -379,7 +448,7 @@ Example cluster health inspection:
 Example write and read:
 
 ```powershell
-$body = @{ value = "phase-8-value" } | ConvertTo-Json
+$body = @{ value = "shardkv-value" } | ConvertTo-Json
 
 Invoke-RestMethod `
     -Method Put `
@@ -432,6 +501,8 @@ Phase 3 raw string values are not automatically migrated to the versioned Phase 
 
 ## Test and package
 
+The current suite contains 112 unit and integration tests covering storage, routing, placement, consistency, health, repair, indexing, queries, APIs, and metrics.
+
 ```powershell
 .\mvnw.cmd clean test
 .\mvnw.cmd clean package
@@ -442,6 +513,20 @@ Run the packaged application with:
 ```powershell
 java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 ```
+
+## CI/CD
+
+The GitHub Actions workflow at [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request. It:
+
+1. checks out the repository and configures Temurin Java 17 with Maven dependency caching;
+2. runs `./mvnw -B -ntp clean test` and `clean package`;
+3. builds the production Docker image;
+4. validates and starts the five-service Compose stack;
+5. runs the container smoke test including persistence across restart;
+6. captures Compose logs if verification fails; and
+7. always removes CI containers, networks, and volumes.
+
+The workflow intentionally does not run Phase 8 load benchmarks or publish images/releases. It verifies correctness and packaging only.
 
 ## Limitations
 
@@ -461,6 +546,8 @@ java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 - Distributed queries require every physical primary-shard node; there is no query failover through replica indexes.
 - Query result sizes are bounded and over-limit results fail rather than paginate.
 - Prometheus and Grafana are local development infrastructure and are not production-secured.
+- The Docker Compose stack is single-host development infrastructure, not production orchestration.
+- Container resource limits, TLS, secret management, ingress, rolling upgrades, and multi-host placement are not configured.
 - No SLO alerts, long-term metric retention, tracing, or centralized logging are configured.
 - Dashboard observations are not load-test or benchmark claims.
 - Phase 8 measurements come from one Windows host with loopback networking and shared CPU, memory, disk, JVM, and Docker resources.
@@ -477,4 +564,4 @@ java -jar target\shardkv-0.0.1-SNAPSHOT.jar
 - Phase 6: Secondary indexes + distributed queries - complete
 - Phase 7: Actuator + Micrometer + Prometheus + Grafana observability - complete
 - Phase 8: Reproducible k6 scale/load testing - complete
-- Phase 9: Docker + CI/CD + production polish
+- Phase 9: Docker + CI correctness automation + project polish - complete

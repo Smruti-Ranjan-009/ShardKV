@@ -1,0 +1,124 @@
+name: shardkv
+
+x-shardkv-common: &shardkv-common
+  image: shardkv:${SHARDKV_IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &shardkv-environment
+    SERVER_PORT: "8080"
+    SHARDKV_CLUSTER_MEMBERS: "node-1,shardkv-node-1,8080;node-2,shardkv-node-2,8080;node-3,shardkv-node-3,8080"
+    SHARDKV_DATA_DIR: /data
+    SHARDKV_REPLICATION_FACTOR: "3"
+    SHARDKV_DEFAULT_CONSISTENCY: QUORUM
+    SHARDKV_INDEX_FIELDS: city,role,experience,active
+  healthcheck:
+    test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://localhost:8080/actuator/health"]
+    interval: 5s
+    timeout: 3s
+    retries: 12
+    start_period: 30s
+  restart: unless-stopped
+  networks:
+    - shardkv
+
+services:
+  shardkv-node-1:
+    <<: *shardkv-common
+    hostname: shardkv-node-1
+    environment:
+      <<: *shardkv-environment
+      SHARDKV_NODE_ID: node-1
+      SHARDKV_NODE_HOST: shardkv-node-1
+    ports:
+      - "8081:8080"
+    volumes:
+      - node-1-data:/data
+
+  shardkv-node-2:
+    <<: *shardkv-common
+    hostname: shardkv-node-2
+    environment:
+      <<: *shardkv-environment
+      SHARDKV_NODE_ID: node-2
+      SHARDKV_NODE_HOST: shardkv-node-2
+    ports:
+      - "8082:8080"
+    volumes:
+      - node-2-data:/data
+
+  shardkv-node-3:
+    <<: *shardkv-common
+    hostname: shardkv-node-3
+    environment:
+      <<: *shardkv-environment
+      SHARDKV_NODE_ID: node-3
+      SHARDKV_NODE_HOST: shardkv-node-3
+    ports:
+      - "8083:8080"
+    volumes:
+      - node-3-data:/data
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    depends_on:
+      shardkv-node-1:
+        condition: service_healthy
+      shardkv-node-2:
+        condition: service_healthy
+      shardkv-node-3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus-docker.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+    networks:
+      - shardkv
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped
+    networks:
+      - shardkv
+
+networks:
+  shardkv:
+    name: shardkv-network
+
+volumes:
+  node-1-data:
+  node-2-data:
+  node-3-data:
+  prometheus-data:
+  grafana-data:
